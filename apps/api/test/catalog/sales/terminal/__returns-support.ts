@@ -147,11 +147,158 @@ export function postReturn(
     .send(body);
 }
 
+/** RT-787: turn the R-7 settle-before-post deploy flag on or off (read per request). */
+export function setSettleBeforePost(on: boolean): void {
+  if (on) process.env["POS_REFUND_SETTLE_BEFORE_POST_ENABLED"] = "true";
+  else delete process.env["POS_REFUND_SETTLE_BEFORE_POST_ENABLED"];
+}
+
+/** RT-787: turn the R-11 legacy `recordRefund` gate on or off (read per request). */
+export function setLegacyRefund(on: boolean): void {
+  if (on) process.env["POS_LEGACY_REFUND_ENABLED"] = "true";
+  else delete process.env["POS_LEGACY_REFUND_ENABLED"];
+}
+
+export interface CaptureTender {
+  readonly method: "cash" | "card_external";
+  readonly amount: string;
+  readonly tenderRef?: string;
+  readonly reference?: string;
+}
+
+/**
+ * RT-787: capture a one-line sale (quantity Q × unit) paid with `tenders`,
+ * through the real capture route with the RT-77 / RT-360 tender gates on for
+ * the call only.
+ */
+export async function captureWithTenders(
+  h: HarnessHandle,
+  opts: { externalId: string; quantity: string; lineAmount: string; tenders: ReadonlyArray<CaptureTender> },
+): Promise<OneLineSale> {
+  process.env["POS_SALE_TENDERS_ENABLED"] = "true";
+  process.env["POS_SALE_TENDERS_SAME_METHOD_ENABLED"] = "true";
+  try {
+    const res = await h
+      .harness!.http()
+      .post("/api/pos/v1/sales")
+      .set("Idempotency-Key", idempKey(`capt${opts.externalId.toLowerCase()}`))
+      .send(
+        captureBody({
+          externalId: opts.externalId,
+          posTotal: opts.lineAmount,
+          lines: [
+            {
+              lineName: "Widget",
+              unitPrice: exactUnitPrice(opts.lineAmount, opts.quantity),
+              currencyCode: "USD",
+              quantity: opts.quantity,
+              lineAmount: opts.lineAmount,
+              unit: "ea",
+            },
+          ],
+          tenders: opts.tenders,
+        }),
+      );
+    if (res.status !== 201) {
+      throw new Error(`capture failed: ${res.status} ${JSON.stringify(res.body)}`);
+    }
+    return { saleRef: res.body.saleRef, lineRef: res.body.lines[0].lineRef };
+  } finally {
+    delete process.env["POS_SALE_TENDERS_ENABLED"];
+    delete process.env["POS_SALE_TENDERS_SAME_METHOD_ENABLED"];
+  }
+}
+
+/** One RT-490 refund allocation of a return body. */
+export interface Allocation {
+  readonly amount: string;
+  readonly allocationRef?: string;
+  readonly originalTenderRef?: string;
+  readonly instrument?: "cash";
+}
+
+/** A recordReturn body whose refund tenders are the given RT-490 allocations. */
+export function allocatedReturnBody(
+  externalId: string,
+  lines: ReadonlyArray<{ lineRef: string; quantity: string }>,
+  allocations: ReadonlyArray<Allocation>,
+): Record<string, unknown> {
+  return {
+    sourceSystem: "pos-1",
+    externalId,
+    lines,
+    refundTenders: allocations.map((a) => ({ method: "cash", ...a })),
+  };
+}
+
+/** A recordRefundExecution body (RT-490) settling `allocationRef` with `amount`. */
+export function executionBody(
+  externalId: string,
+  allocationRef: string,
+  amount: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    sourceSystem: "pos-1",
+    externalId,
+    executionRef: uuidFor(`exec:${externalId}`),
+    allocationRef,
+    amount,
+    outcome: "settled",
+    evidence: { method: "drawer", paidAt: new Date(Date.now() - 60_000).toISOString(), shiftRef: SHIFT_REF },
+    ...overrides,
+  };
+}
+
+/** The shift whose drawer pays the executions in these specs (recorded as reported). */
+export const SHIFT_REF = "0d000000-0000-7000-8000-0000000051f1";
+
+/** A deterministic uuid-shaped value from a seed (test refs only). */
+export function uuidFor(seed: string): string {
+  let a = 0x811c9dc5;
+  let b = 0x01000193;
+  for (const ch of seed) {
+    a = Math.imul(a ^ ch.charCodeAt(0), 0x01000193) >>> 0;
+    b = Math.imul(b ^ ch.charCodeAt(0), 0x85ebca6b) >>> 0;
+  }
+  const hex = (a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0")).repeat(2);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-7${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** POST a refund execution. */
+export function postExecution(
+  h: HarnessHandle,
+  saleRef: string,
+  returnRef: string,
+  body: Record<string, unknown>,
+  key: string,
+) {
+  return h
+    .harness!.http()
+    .post(`/api/pos/v1/sales/${saleRef}/returns/${returnRef}/executions`)
+    .set("Idempotency-Key", idempKey(key))
+    .send(body);
+}
+
+/** The `erpnext.posting.requested` reversal events emitted for a return. */
+export async function postingEventsFor(h: HarnessHandle, returnRef: string): Promise<number> {
+  const r = await h.harness!.env.admin.query(
+    `SELECT 1 FROM outbox_events
+      WHERE event_type = 'erpnext.posting.requested' AND payload->>'source_ref_id' = $1`,
+    [returnRef],
+  );
+  return r.rowCount ?? 0;
+}
+
 /** Remove every row the return specs create (children first). */
 export async function cleanReturnsFixtures(h: HarnessHandle): Promise<void> {
   if (!h.harness) return;
   const q = (sql: string) => h.harness!.env.admin.query(sql);
   const sales = "SELECT id FROM sales WHERE source_system = 'pos-1'";
+  // RT-787 (0067): executions reference the return and its allocation.
+  await q(`DELETE FROM refund_executions WHERE return_id IN
+           (SELECT id FROM sale_returns WHERE sale_id IN (${sales}))`);
+  await q(`DELETE FROM sale_refunds WHERE sale_id IN (${sales})`);
   await q(`DELETE FROM sale_return_tenders WHERE return_id IN
            (SELECT id FROM sale_returns WHERE sale_id IN (${sales}))`);
   await q(`DELETE FROM sale_return_lines WHERE return_id IN

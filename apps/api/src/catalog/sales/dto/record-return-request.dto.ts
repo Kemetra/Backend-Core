@@ -24,12 +24,29 @@ export const ReturnLineRequestSchema = z
   })
   .strict();
 
+/**
+ * One refund ALLOCATION (RT-271 R-2; RT-490). The three RT-490 fields are
+ * optional and part of the return's payload (R-3): an absent `instrument`
+ * means cash but hashes differently.
+ */
 export const RefundTenderSchema = z
   .object({
     method: z.literal("cash"),
     amount,
+    allocationRef: z.string().regex(UUID_RE, "must be a uuid").optional(),
+    originalTenderRef: z.string().regex(UUID_RE, "must be a uuid").optional(),
+    instrument: z.literal("cash").optional(),
   })
   .strict();
+
+type RefundTenderInput = z.infer<typeof RefundTenderSchema>;
+
+/** RT-490 allocation rule 1: `allocationRef` on every allocation or none, each at most once. */
+function allocationRefsConsistent(tenders: ReadonlyArray<RefundTenderInput>): boolean {
+  const refs = tenders.flatMap((t) => (t.allocationRef === undefined ? [] : [t.allocationRef.toLowerCase()]));
+  if (refs.length === 0) return true;
+  return refs.length === tenders.length && new Set(refs).size === refs.length;
+}
 
 export const RecordReturnRequestSchema = z
   .object({
@@ -42,7 +59,13 @@ export const RecordReturnRequestSchema = z
         (lines) => new Set(lines.map((l) => l.lineRef.toLowerCase())).size === lines.length,
         "each lineRef may appear at most once",
       ),
-    refundTenders: z.array(RefundTenderSchema).min(1),
+    refundTenders: z
+      .array(RefundTenderSchema)
+      .min(1)
+      .refine(
+        allocationRefsConsistent,
+        "allocationRef must be on every allocation or none, and unique within the return",
+      ),
     reason: z.string().min(1).max(500).refine(hasNoNul, NO_NUL_MESSAGE).optional(),
   })
   .strict();

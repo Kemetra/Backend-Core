@@ -479,6 +479,14 @@ describe("SalesService — readSaleProjection branches (unit)", () => {
 });
 
 describe("SalesController — guard + status branches (unit)", () => {
+  // RT-787 (RT-271 R-11): the legacy refund route is gated off by default.
+  beforeAll(() => {
+    process.env["POS_LEGACY_REFUND_ENABLED"] = "true";
+  });
+  afterAll(() => {
+    delete process.env["POS_LEGACY_REFUND_ENABLED"];
+  });
+
   // The 2nd ctor arg (SaleReturnsService) is not exercised by these branches;
   // it is passed as `undefined` explicitly, exactly as the prior 1-arg calls did.
   function makeRes(): { status: jest.Mock; setHeader: jest.Mock } {

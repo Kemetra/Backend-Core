@@ -378,15 +378,17 @@ async function buildReversalRef(
     reversal_kind: "void" | "refund" | "return";
     recorded_at: Date;
     business_date: string | null;
+    /** RT-787 (R-7): a return deferred to its settlement at acceptance. */
+    posting_deferred?: boolean;
   }>(
     `SELECT 'void'::text AS reversal_kind, voided_at AS recorded_at,
-            business_date::text AS business_date
+            business_date::text AS business_date, false AS posting_deferred
        FROM sale_voids WHERE id = $1
      UNION ALL
-     SELECT 'refund'::text, refunded_at, NULL::text
+     SELECT 'refund'::text, refunded_at, NULL::text, false
        FROM sale_refunds WHERE id = $1
      UNION ALL
-     SELECT 'return'::text, returned_at, business_date::text
+     SELECT 'return'::text, returned_at, business_date::text, posting_deferred
        FROM sale_returns WHERE id = $1
      LIMIT 1`,
     [sourceRefId],
@@ -415,7 +417,7 @@ async function buildReversalRef(
       lineAmount: l.line_amount,
       taxAmount: l.tax_amount,
     }));
-    refundTenders = await loadRefundTenders(client, sourceRefId);
+    refundTenders = await loadRefundTenders(client, sourceRefId, rk.posting_deferred === true);
   }
 
   return {
@@ -515,14 +517,22 @@ async function loadSaleResponsibilities(
  * {@link ReturnTendersNotVisibleError}: the contract INVARIANT forbids offering a return
  * without its tenders (the field is optional on the wire, and a credit note posted without its
  * cash is terminal), and omitting the item would let the page cursor skip a still-pending row.
+ *
+ * RT-787 (RT-271 R-7): a return deferred to its settlement at acceptance is emitted only once
+ * its settled cash executions sum to its total, so its tenders are those executions, one
+ * `{method: cash, amount}` entry each, in execution order (`recordedAt`, then `executionRef`).
  */
 async function loadRefundTenders(
   client: PoolClient,
   returnId: string,
+  settledOnly: boolean,
 ): Promise<RefundWorkTender[]> {
   const rt = await client.query<{ method: "cash"; amount: string }>(
-    `SELECT method, amount::text AS amount
-       FROM sale_return_tenders WHERE return_id = $1 ORDER BY ordinal`,
+    settledOnly
+      ? `SELECT 'cash'::text AS method, amount::text AS amount
+           FROM refund_executions WHERE return_id = $1 ORDER BY recorded_at, execution_ref`
+      : `SELECT method, amount::text AS amount
+           FROM sale_return_tenders WHERE return_id = $1 ORDER BY ordinal`,
     [returnId],
   );
   if (rt.rows.length === 0) throw new ReturnTendersNotVisibleError(returnId);

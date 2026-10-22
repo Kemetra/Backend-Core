@@ -44,9 +44,12 @@ const spy = new SpyAuditEnqueuer();
 const h: HarnessHandle = { harness: null, dockerSkipped: false };
 
 beforeAll(async () => {
+  // RT-787 (RT-271 R-11): the legacy refund route is gated off by default.
+  process.env["POS_LEGACY_REFUND_ENABLED"] = "true";
   Object.assign(h, await startCaptureHarness({ auditEnqueuer: spy }));
 }, 180_000);
 afterAll(async () => {
+  delete process.env["POS_LEGACY_REFUND_ENABLED"];
   await stopCaptureHarness(h);
 }, 60_000);
 beforeEach(() => {

@@ -26,11 +26,16 @@ import {
   type HarnessHandle,
 } from "../../sales/capture/__capture-harness";
 import {
+  allocatedReturnBody,
   cleanReturnsFixtures,
   disableReturns,
   enableReturns,
+  executionBody,
+  postExecution,
   postReturn,
   returnBody,
+  setSettleBeforePost,
+  uuidFor,
 } from "../../sales/terminal/__returns-support";
 
 const h: HarnessHandle = { harness: null, dockerSkipped: false };
@@ -143,6 +148,48 @@ describe("RT-73 — reversal work-items from real rows", () => {
 
     const again = await project(sale.saleRef, ret.body.returnRef);
     expect(again).toEqual(first);
+  });
+
+  it("RT-787 (R-7): a return settled through executions projects one refund tender per settled execution, in execution order", async () => {
+    if (skip()) return;
+    setSettleBeforePost(true);
+    try {
+      const sale = await captureMapped("bw-settled");
+      const a1 = uuidFor("bw-settled-a1");
+      const a2 = uuidFor("bw-settled-a2");
+      const ret = await postReturn(
+        h,
+        sale.saleRef,
+        allocatedReturnBody("bw-settled-1", [{ lineRef: sale.lineRef, quantity: "3" }], [
+          { amount: "5.0000", allocationRef: a1 },
+          { amount: "4.0000", allocationRef: a2 },
+        ]),
+        "bwsettled1",
+      );
+      expect(ret.status).toBe(201);
+      for (const [i, [ref, amount]] of ([[a2, "4.0000"], [a1, "2.0000"], [a1, "3.0000"]] as const).entries()) {
+        const res = await postExecution(
+          h,
+          sale.saleRef,
+          ret.body.returnRef,
+          executionBody(`bw-settled-e${i}`, ref, amount),
+          `bwsettlede${i}`,
+        );
+        expect(res.status).toBe(201);
+      }
+      const item = await project(sale.saleRef, ret.body.returnRef);
+      expect(item!.reversalOf).toMatchObject({
+        reversalKind: "return",
+        refundTenders: [
+          { method: "cash", amount: "4.0000" },
+          { method: "cash", amount: "2.0000" },
+          { method: "cash", amount: "3.0000" },
+        ],
+      });
+      expect(await project(sale.saleRef, ret.body.returnRef)).toEqual(item);
+    } finally {
+      setSettleBeforePost(false);
+    }
   });
 
   it("a void projects its own recordedAt + businessDate and no returnLines; re-projection is identical", async () => {

@@ -42,6 +42,8 @@ const h: HarnessHandle = { harness: null, dockerSkipped: false };
 const PAYER = "0a000000-0000-7000-8000-0000005770a1";
 
 beforeAll(async () => {
+  // RT-787 (RT-271 R-11): the legacy refund route is gated off by default.
+  process.env["POS_LEGACY_REFUND_ENABLED"] = "true";
   Object.assign(h, await startCaptureHarness());
   if (!h.harness) return;
   await h.harness.env.admin.query(
@@ -51,6 +53,7 @@ beforeAll(async () => {
   );
 }, 180_000);
 afterAll(async () => {
+  delete process.env["POS_LEGACY_REFUND_ENABLED"];
   delete process.env[TENDERS_FLAG];
   disableReturns();
   await stopCaptureHarness(h);

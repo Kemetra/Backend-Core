@@ -45,7 +45,13 @@ import {
   APPROVER_TENANT_ADMIN,
   HARNESS_REQUESTER,
 } from "../__support__/void-approval-fixture";
-import { disableReturns, enableReturns } from "../terminal/__returns-support";
+import {
+  disableReturns,
+  enableReturns,
+  executionBody,
+  postExecution,
+  uuidFor,
+} from "../terminal/__returns-support";
 
 class SpyAuditEnqueuer implements AuditJobEnqueuer {
   public calls: AuditJobPayload[] = [];
@@ -785,5 +791,71 @@ describe("RT-577 credit reversal — Opus review hardening (#806)", () => {
       [sale.saleRef],
     );
     expect(totals.rows[0]).toEqual({ refunded: "1.0000", adjusted: "2.0000", n: 3 });
+  });
+});
+
+describe("RT-787 — a credit sale stays outside RT-490 refund executions (RT-577)", () => {
+  async function creditReturnRef(sale: CapturedSale): Promise<string> {
+    const r = await h.harness!.env.admin.query<{ id: string }>(
+      `SELECT id::text AS id FROM sale_returns WHERE sale_id = $1`,
+      [sale.saleRef],
+    );
+    return r.rows[0]!.id;
+  }
+
+  async function executionsAndPostings(sale: CapturedSale): Promise<{ executions: string; postings: string }> {
+    const r = await h.harness!.env.admin.query<{ executions: string; postings: string }>(
+      `SELECT (SELECT count(*) FROM refund_executions WHERE sale_id = $1::uuid)::text AS executions,
+              (SELECT count(*) FROM outbox_events WHERE payload->>'sale_id' = $1::text)::text AS postings`,
+      [sale.saleRef],
+    );
+    return r.rows[0]!;
+  }
+
+  it("a refund execution against a credit return is the non-disclosing 404 and writes nothing", async () => {
+    if (skip()) return;
+    const sale = await captureSale({ externalId: "rt787-credit-exec" });
+    expect((await post(sale, returnBody(sale, { lines: [0], refund: "1" }))).status).toBe(201);
+    const returnRef = await creditReturnRef(sale);
+    const before = await executionsAndPostings(sale);
+    // Even naming an allocation id cannot pay out uncollected credit.
+    const res = await postExecution(h, sale.saleRef, returnRef, executionBody("rt787-credit-e1", uuidFor("credit"), "1"), "rt787cx");
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("not_found");
+    expect(await executionsAndPostings(sale)).toEqual(before);
+    expect(before.executions).toBe("0");
+  });
+
+  it("the return reads do not list or resolve a credit return", async () => {
+    if (skip()) return;
+    const sale = await captureSale({ externalId: "rt787-credit-read" });
+    const body = returnBody(sale, { lines: [0], refund: "1" });
+    expect((await post(sale, body)).status).toBe(201);
+    const list = await h.harness!.http().get(`/api/pos/v1/sales/${sale.saleRef}/returns`);
+    expect(list.status).toBe(200);
+    expect(list.body).toEqual({ saleRef: sale.saleRef, returns: [] });
+    const read = await h
+      .harness!.http()
+      .get(`/api/pos/v1/sales/${sale.saleRef}/returns/by-provenance`)
+      .query({ sourceSystem: "pos-1", externalId: body["externalId"] as string });
+    expect(read.status).toBe(404);
+  });
+
+  it("an ordinary return of a credit sale carrying allocation fields is still 403 credit_sale_reversal_restricted", async () => {
+    if (skip()) return;
+    const sale = await captureSale({ externalId: "rt787-credit-ordinary" });
+    const res = await h
+      .harness!.http()
+      .post(`/api/pos/v1/sales/${sale.saleRef}/returns`)
+      .set("Idempotency-Key", nextKey())
+      .send({
+        sourceSystem: "pos-1",
+        externalId: "rt787-ordinary-1",
+        lines: [{ lineRef: sale.lineRefs[0], quantity: "1" }],
+        refundTenders: [{ method: "cash", amount: "5.0000", allocationRef: uuidFor("rt787-ordinary") }],
+      });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("credit_sale_reversal_restricted");
+    expect((await written(sale)).returns).toBe(0);
   });
 });

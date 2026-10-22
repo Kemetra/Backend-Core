@@ -67,6 +67,12 @@ import {
   RecordReturnRequestSchema,
   type RecordReturnRequestDto,
 } from "./dto/record-return-request.dto";
+import {
+  RefundAllocationExceedsTenderError,
+  RefundAllocationTenderInvalidError,
+  RefundInstrumentNotAllowedError,
+} from "./refund-allocation";
+import { isLegacyRefundEnabled } from "./refund-gates";
 import { isPosReturnsEnabled } from "./returns-gate";
 import {
   VoidApprovalInvalidError,
@@ -218,6 +224,15 @@ export function toReversalHttpError(err: unknown): unknown {
   }
   if (err instanceof ReturnLineInvalidError) {
     return new BadRequestException({ code: "validation_error", message: "lineRef is not a line of this sale" });
+  }
+  if (err instanceof RefundAllocationTenderInvalidError) {
+    return new BadRequestException({ code: "validation_error", message: err.message });
+  }
+  if (err instanceof RefundInstrumentNotAllowedError) {
+    return new UnprocessableEntityException({ code: "refund_instrument_not_allowed", message: err.message });
+  }
+  if (err instanceof RefundAllocationExceedsTenderError) {
+    return new UnprocessableEntityException({ code: "refund_allocation_exceeds_tender", message: err.message });
   }
   if (err instanceof ReturnQuantityNotWholeError) {
     return new BadRequestException({
@@ -463,6 +478,10 @@ export class SalesController {
     body: RecordRefundRequestDto,
     @Res({ passthrough: true }) res: Response,
   ): Promise<TerminalEventProjection> {
+    // RT-787 (RT-271 R-11): gated off by default, a provenance replay included.
+    if (!isLegacyRefundEnabled()) {
+      throw new NotFoundException("not_found");
+    }
     const ctx = request.context;
     if (!ctx || ctx.tenantId === null || ctx.userId === null) {
       throw new UnauthorizedException("Unauthorized");
