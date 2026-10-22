@@ -10,6 +10,14 @@
  *   - Exposes an `app` pool connected as a non-superuser `app_test` role
  *     so tests that exercise RLS (e.g., AuthTokenRepository tenant
  *     isolation) hit the policies for real.
+ *
+ * RT-815: under Jest's globalSetup (`jest-global-setup.ts`) there is ONE
+ * shared server per run, and `startPgEnv()` clones a fresh, fully migrated
+ * database from its `rt_template` per spec file instead of booting a
+ * container. `startPgEnv({ isolated: true })` keeps a private container for
+ * specs that change cluster-wide state (roles) or need a container handle.
+ * Without globalSetup (e.g. the worker package) it falls back to a private
+ * container, exactly as before.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -20,6 +28,15 @@ import {
 import { Client, Pool } from "pg";
 
 import { deviceActivity } from "../../src/pos-operators/device-activity";
+import {
+  cloneDatabase,
+  dropDatabase,
+  readSharedServer,
+  SUPERUSER,
+  SUPERUSER_PASSWORD,
+  uriFor,
+  type SharedServer,
+} from "./pg-shared-server";
 
 const DRIZZLE_DIR = resolve(
   __dirname,
@@ -37,7 +54,8 @@ export const APP_ROLE_NAME = "app_test";
 export const APP_ROLE_PASSWORD = "app_test";
 
 export interface PgTestEnv {
-  container: StartedPostgreSqlContainer;
+  /** Private container; present only on an isolated or fallback env (RT-815). */
+  container?: StartedPostgreSqlContainer;
   /** Pool connected as the database superuser (Testcontainers default). */
   admin: Pool;
   /** Pool connected as the non-superuser `app_test` role. */
@@ -45,26 +63,65 @@ export interface PgTestEnv {
   upSql: string;
   /** Connection URI for the superuser. */
   adminUri: string;
+  host: string;
+  port: number;
+  /** This env's own database: a clone on the shared server, or `test`. */
+  database: string;
+  /** True when the database is a clone of the shared, already-migrated template. */
+  cloned: boolean;
+  /** Connection URI for `user` on this env's own database. */
+  uriFor(user: string, password: string): string;
 }
 
-export async function startPgEnv(): Promise<PgTestEnv> {
+export type IsolatedPgTestEnv = PgTestEnv & { container: StartedPostgreSqlContainer };
+
+export interface StartPgEnvOptions {
+  /** Keep a private container even when a shared server exists (RT-815 §3.4). */
+  isolated?: boolean;
+}
+
+function buildEnv(
+  server: Pick<SharedServer, "host" | "port">,
+  database: string,
+  cloned: boolean,
+  container?: StartedPostgreSqlContainer,
+): PgTestEnv {
+  const adminUri = uriFor(server, database, SUPERUSER, SUPERUSER_PASSWORD);
+  return {
+    ...(container ? { container } : {}),
+    admin: guardPool(new Pool({ connectionString: adminUri })),
+    app: guardPool(new Pool({ connectionString: uriFor(server, database, APP_ROLE_NAME, APP_ROLE_PASSWORD) })),
+    upSql: readFileSync(UP_SQL_PATH, "utf8"),
+    adminUri,
+    host: server.host,
+    port: server.port,
+    database,
+    cloned,
+    uriFor: (user, password) => uriFor(server, database, user, password),
+  };
+}
+
+async function startContainerEnv(): Promise<IsolatedPgTestEnv> {
   const container = await new PostgreSqlContainer("postgres:16-alpine")
     .withDatabase("test")
-    .withUsername("postgres")
-    .withPassword("postgres")
+    .withUsername(SUPERUSER)
+    .withPassword(SUPERUSER_PASSWORD)
     .start();
+  const server = { host: container.getHost(), port: container.getMappedPort(5432) };
+  return buildEnv(server, "test", false, container) as IsolatedPgTestEnv;
+}
 
-  const adminUri = container.getConnectionUri();
-  const admin = guardPool(new Pool({ connectionString: adminUri }));
-
-  const upSql = readFileSync(UP_SQL_PATH, "utf8");
-
-  const host = container.getHost();
-  const port = container.getMappedPort(5432);
-  const appUri = `postgres://${APP_ROLE_NAME}:${APP_ROLE_PASSWORD}@${host}:${port}/test`;
-  const app = guardPool(new Pool({ connectionString: appUri }));
-
-  return { container, admin, app, upSql, adminUri };
+export function startPgEnv(opts: { isolated: true }): Promise<IsolatedPgTestEnv>;
+export function startPgEnv(opts?: StartPgEnvOptions): Promise<PgTestEnv>;
+export async function startPgEnv(opts: StartPgEnvOptions = {}): Promise<PgTestEnv> {
+  const shared = opts.isolated ? null : readSharedServer();
+  if (!shared) return startContainerEnv();
+  const startedAt = Date.now();
+  const database = await cloneDatabase(shared);
+  if (process.env["RT_PG_TIMING"] === "1") {
+    process.stderr.write(`[rt-815] cloned ${database} in ${Date.now() - startedAt} ms\n`);
+  }
+  return buildEnv(shared, database, true);
 }
 
 /**
@@ -154,23 +211,27 @@ export async function endPoolQuietly(pool: Pool): Promise<void> {
  * a leaked (never-ended) pool costs `timeoutMs` and a warning naming the open
  * connections, rather than hanging the suite.
  */
-async function waitForOtherBackendsToExit(uri: string, timeoutMs = 5000): Promise<void> {
+async function waitForOtherBackendsToExit(uri: string, database: string, timeoutMs = 5000): Promise<void> {
   const probe = new Client({ connectionString: uri });
   probe.on("error", ignoreShutdownErrors);
   try {
     await probe.connect();
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      // Scoped to this env's database: on the shared server (RT-815) other
+      // workers' databases have live backends that are not ours to wait for.
       const { rows } = await probe.query<{ n: number }>(
         `SELECT count(*)::int AS n FROM pg_stat_activity
-         WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()`,
+         WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname = $1`,
+        [database],
       );
       if (rows[0]?.n === 0) return;
       await new Promise((r) => setTimeout(r, 50));
     }
     const { rows: left } = await probe.query(
       `SELECT usename, state, left(query, 80) AS query FROM pg_stat_activity
-       WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()`,
+       WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname = $1`,
+      [database],
     );
     // eslint-disable-next-line no-console
     console.warn(
@@ -188,8 +249,13 @@ export async function stopPgEnv(env: PgTestEnv): Promise<void> {
   await deviceActivity.flush();
   await endPoolQuietly(env.app);
   await endPoolQuietly(env.admin);
-  await waitForOtherBackendsToExit(env.adminUri).catch(() => undefined);
-  await env.container.stop().catch(() => undefined);
+  await waitForOtherBackendsToExit(env.adminUri, env.database).catch(() => undefined);
+  if (env.container) {
+    await env.container.stop().catch(() => undefined);
+    return;
+  }
+  const shared = readSharedServer();
+  if (shared) await dropDatabase(shared, env.database).catch(() => undefined);
 }
 
 /**
@@ -203,14 +269,22 @@ export async function stopPgEnv(env: PgTestEnv): Promise<void> {
  * 0000-only specs that exercise just the foundation slice.
  */
 export async function applyAllUpAndCreateAppRole(env: PgTestEnv): Promise<void> {
+  // A clone already carries every migration, the role and the grants: the
+  // shared template was built by `applyAllMigrationsAndAppRole` (RT-815).
+  if (env.cloned) return;
+  await applyAllMigrationsAndAppRole(env.admin);
+}
+
+/** Every UP migration in lex order + the `app_test` role and its grants. */
+export async function applyAllMigrationsAndAppRole(admin: Pool): Promise<void> {
   const upFiles = readdirSync(DRIZZLE_DIR)
     .filter((n) => /^\d{4}_.+\.sql$/.test(n) && !n.endsWith(".down.sql"))
     .sort();
   for (const name of upFiles) {
     const sql = readFileSync(resolve(DRIZZLE_DIR, name), "utf8");
-    await env.admin.query(sql);
+    await admin.query(sql);
   }
-  await env.admin.query(`
+  await admin.query(`
     DO $$
     BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${APP_ROLE_NAME}') THEN
@@ -219,12 +293,12 @@ export async function applyAllUpAndCreateAppRole(env: PgTestEnv): Promise<void> 
     END
     $$;
   `);
-  await env.admin.query(`GRANT USAGE ON SCHEMA public TO ${APP_ROLE_NAME}`);
-  await env.admin.query(`
+  await admin.query(`GRANT USAGE ON SCHEMA public TO ${APP_ROLE_NAME}`);
+  await admin.query(`
     GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA public TO ${APP_ROLE_NAME}
   `);
-  await env.admin.query(`
+  await admin.query(`
     GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA public TO ${APP_ROLE_NAME}
   `);

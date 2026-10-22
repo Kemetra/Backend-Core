@@ -142,7 +142,10 @@ Some specs use cluster-wide views as synchronisation barriers. Today that is saf
 | `test/pos-cashier-admissions/cashier-admissions.idempotency.integration.spec.ts:389` | polls `pg_stat_activity` for an advisory waiter |
 | `test/pos-cashier-admissions/cashier-admissions.integration.spec.ts:757,937` | same |
 
-*My call:* add a filter rather than isolate. `pg_locks`: `AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`. `pg_stat_activity`: `AND datname = current_database()`. Isolating would put the whole shift harness family back on per-file containers and lose much of the gain. The barrier semantics are unchanged, because every waiter the test cares about is in its own database. `rotation.http.integration.spec.ts:454` already filters this way.
+*My call:* add a filter rather than isolate.
+
+- `pg_stat_activity`: `AND datname = current_database()`.
+- `pg_locks`: join `pg_stat_activity` on `pid` and filter `a.datname = current_database()`. **Not** `l.database = …`: a row-lock waiter waits on a `transactionid` lock, whose `database` column is NULL, so that filter would never release the barrier (found at implementation, 2026-10-22). Isolating would put the whole shift harness family back on per-file containers and lose much of the gain. The barrier semantics are unchanged, because every waiter the test cares about is in its own database. `rotation.http.integration.spec.ts:454` already filters this way.
 
 ### 3.5 Fallback, and running a single file locally
 
