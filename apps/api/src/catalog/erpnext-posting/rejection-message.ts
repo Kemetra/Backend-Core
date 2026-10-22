@@ -32,15 +32,24 @@ const REDACTED = "[redacted]";
 const CONTROL_CHARS = /[\u0000-\u001F\u0080-\u009F]/gu;
 
 /**
- * A credential key ending an identifier, its separator (an optional closing
- * quote of the key, `:` or `=`) and its value: a quoted value up to its
- * closing quote (spaces included), or an optional auth-scheme word (`Bearer`,
- * `Basic`, `token` as in Frappe's `token key:secret`, `Digest`) with the
- * credential up to a delimiter (PR #905 review). An already-redacted value is
- * left as it is, so sanitising is idempotent.
+ * A credential key (it may end a longer identifier, as in `dp2_token`) and its
+ * separator: an optional closing quote of the key, then `:` or `=`.
  */
-const KEY_VALUE =
-  /([A-Za-z0-9_-]*?(?:token|password|passwd|pwd|secret|api[_-]?key|authorization))(["']?\s*[:=]\s*)(?!["']?\[redacted\])("[^"]*"?|'[^']*'?|(?:(?:bearer|basic|token|digest)\s+)?[^\s"',;&}\]]+)/gi;
+const KEY = String.raw`(token|password|passwd|pwd|secret|api[_-]?key|authorization)(["']?\s*[:=]\s*)`;
+
+/** A key's quoted value, up to its closing quote, spaces included (PR #905 review). */
+const QUOTED_VALUE = new RegExp(String.raw`${KEY}("[^"]*"?|'[^']*'?)`, "gi");
+
+/**
+ * A key's bare value: an optional auth-scheme word (`Bearer`, `Basic`,
+ * `token` as in Frappe's `token key:secret`, `Digest`) and the credential up
+ * to a delimiter (PR #905 review). An already-redacted value is left as it
+ * is, so sanitising is idempotent.
+ */
+const BARE_VALUE = new RegExp(
+  String.raw`${KEY}(?!\[redacted\])(?:(?:bearer|basic|token|digest)\s+)?[^\s"',;&}\]]+`,
+  "gi",
+);
 
 /**
  * A standalone auth scheme and its credential, outside any key: `Bearer
@@ -51,15 +60,15 @@ const KEY_VALUE =
  * case; the credential's case test must not, hence the inline `[a-z][A-Z]`.
  */
 const SCHEME_CREDENTIALS = [
-  /\b(bearer)\s+[A-Za-z0-9\-._~+/]+=*/gi,
+  /\b(bearer)\s+[\w.~+/-]+=*/gi,
   /\b(token)\s+[\w.-]+:[\w.-]+/gi,
   /\b([Bb][Aa][Ss][Ii][Cc])\s+(?=[A-Za-z0-9+/]*(?:[0-9+/=]|[a-z][A-Z]))[A-Za-z0-9+/]{8,}={0,2}/g,
 ];
 
-/** The key and separator kept, the value replaced; a quoted value keeps its quotes. */
-function redactKeyValue(_match: string, key: string, separator: string, value: string): string {
-  const quote = value.startsWith('"') || value.startsWith("'") ? value[0]! : "";
-  const closing = quote !== "" && value.length > 1 && value.endsWith(quote) ? quote : "";
+/** A quoted value keeps its quotes; an unterminated one stays unterminated. */
+function redactQuoted(_match: string, key: string, separator: string, value: string): string {
+  const quote = value[0]!;
+  const closing = value.length > 1 && value.endsWith(quote) ? quote : "";
   return `${key}${separator}${quote}${REDACTED}${closing}`;
 }
 
@@ -68,7 +77,11 @@ export function sanitizeRejectionMessage(message: string | null | undefined): st
   if (typeof message !== "string") return null;
   const redacted = SCHEME_CREDENTIALS.reduce(
     (text, scheme) => text.replace(scheme, (_match, word: string) => `${word} ${REDACTED}`),
-    message.replace(CONTROL_CHARS, "").trim().replace(KEY_VALUE, redactKeyValue),
+    message
+      .replace(CONTROL_CHARS, "")
+      .trim()
+      .replace(QUOTED_VALUE, redactQuoted)
+      .replace(BARE_VALUE, (_match, key: string, separator: string) => `${key}${separator}${REDACTED}`),
   );
   const bounded = Array.from(redacted).slice(0, REJECTION_MESSAGE_MAX).join("");
   return bounded.length === 0 ? null : bounded;
