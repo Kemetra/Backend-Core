@@ -369,7 +369,7 @@ describe("forceCloseShift — concurrency on the shift row lock", () => {
     const both = Promise.all([forceClose({ bearer: envelopeA, shiftId }), forceClose({ bearer: envelopeB, shiftId })]);
     await waitForLockWaiters(2);
     await lock.release();
-    expect((await both).map((r) => r.status).sort()).toEqual([200, 201]);
+    expect((await both).map((r) => r.status).sort((a, b) => a - b)).toEqual([200, 201]);
   });
 });
 

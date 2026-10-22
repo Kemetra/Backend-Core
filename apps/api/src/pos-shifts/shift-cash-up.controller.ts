@@ -103,12 +103,16 @@ export function shiftWriteContext(request: TenantContextRequest): ShiftWriteCont
  * generic 401.
  */
 export function forceCloseContext(request: TenantContextRequest): ForceCloseContext {
-  const principal = request.principal;
-  const tokenId = principal?.kind === "token" && principal.scope === "pos_operator" ? principal.tokenId : null;
-  const { userId, tenantId, storeId } = request.context ?? {};
-  const callerDeviceId = request.posDeviceId;
-  if (!tokenId || !userId || !tenantId || !storeId || !callerDeviceId) throw new UnauthorizedException("Unauthorized");
-  return { tenantId, storeId, actorUserId: userId, callerDeviceId, callerTokenId: tokenId };
+  const { scope, actorUserId, path } = shiftWriteContext(request);
+  const tokenId = request.principal?.kind === "token" ? request.principal.tokenId : null;
+  if (path !== "envelope" || !tokenId) throw new UnauthorizedException("Unauthorized");
+  return {
+    tenantId: scope.tenantId,
+    storeId: scope.storeId,
+    actorUserId,
+    callerDeviceId: scope.deviceId,
+    callerTokenId: tokenId,
+  };
 }
 
 /** A forced close is manager-envelope only (contract "Forced close"). */
