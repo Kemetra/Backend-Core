@@ -238,6 +238,7 @@ describe("data-pulse-migrate CLI", () => {
     "0067_refund_executions",
     "0068_pos_device_health",
     "0070_shift_forced_closes",
+    "0071_erpnext_posting_rejection_message",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -571,8 +572,20 @@ describe("data-pulse-migrate CLI", () => {
   }
 
   /**
-   * After one `down` from head: 0070's force-close table and its two UNIQUE
-   * targets are gone, while 0068's device health and version policy tables,
+   * 0071_erpnext_posting_rejection_message (RT-410): [the rejection_message
+   * column, its two validated CHECKs].
+   */
+  async function countRejectionMessageObjects(): Promise<[string, string]> {
+    const checks = await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+      WHERE conname IN ('erpnext_posting_status_rejection_message_length',
+                        'erpnext_posting_status_rejection_message_when_rejected') AND convalidated`);
+    return [await countPublicColumn("erpnext_posting_status", "rejection_message"), checks];
+  }
+
+  /**
+   * After one `down` from head: 0071's rejection_message column and its CHECKs
+   * are gone, while 0070's force-close table and its two UNIQUE targets,
+   * 0068's device health and version policy tables,
    * 0067's refund executions, allocation columns,
    * posting_deferred and original-tender trigger, 0066's
    * pending-aware result classes, 0064-0065's stock-movement history
@@ -584,7 +597,9 @@ describe("data-pulse-migrate CLI", () => {
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countShiftForcedCloseObjects()).toEqual(["0", "0", "0"]);
+    expect(await countRejectionMessageObjects()).toEqual(["0", "0"]);
+    // 0070's force-close table and its two UNIQUE targets (RT-742) stay.
+    expect(await countShiftForcedCloseObjects()).toEqual(["1", "2", "2"]);
     await expectShiftCashUpApplied();
     // 0068's two tables (RT-327) stay.
     expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
@@ -685,6 +700,8 @@ describe("data-pulse-migrate CLI", () => {
     // 0070's force-close table (SELECT + INSERT policies) and its two
     // composite FK targets on shifts and devices (RT-742).
     expect(await countShiftForcedCloseObjects()).toEqual(["1", "2", "2"]);
+    // 0071's rejection_message column and its two validated CHECKs (RT-410).
+    expect(await countRejectionMessageObjects()).toEqual(["1", "2"]);
   }
 
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */
@@ -837,7 +854,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0070 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0071 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();

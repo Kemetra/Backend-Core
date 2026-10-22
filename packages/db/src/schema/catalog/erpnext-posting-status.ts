@@ -115,6 +115,11 @@ export const erpnextPostingStatus = pgTable(
     // 0042 (RT-425): server time the `posted` ack was applied — the ERP
     // confirmation time (RT-289 G2-4). NULL on rows posted before 0042.
     postedAt: timestamp("posted_at", { withTimezone: true }),
+    // 0071 (RT-410): the Connector's rejection message, sanitised (control
+    // characters removed, credentials redacted, at most 1000 characters). Set
+    // only on a `permanently_rejected` row; a repair re-offer clears it.
+    // PII-suspect business text: never logged, audited or used as a label.
+    rejectionMessage: text("rejection_message"),
   },
   (t) => [
     check(
@@ -150,6 +155,15 @@ export const erpnextPostingStatus = pgTable(
     check(
       "erpnext_posting_status_posted_at_when_posted",
       sql`${t.postedAt} IS NULL OR ${t.status} = 'posted'`,
+    ),
+    // 0071 (RT-410), both NOT VALID then validated in SQL.
+    check(
+      "erpnext_posting_status_rejection_message_length",
+      sql`${t.rejectionMessage} IS NULL OR char_length(${t.rejectionMessage}) BETWEEN 1 AND 1000`,
+    ),
+    check(
+      "erpnext_posting_status_rejection_message_when_rejected",
+      sql`${t.rejectionMessage} IS NULL OR ${t.status} = 'permanently_rejected'`,
     ),
     // 0037: composite target for erpnext_posting_resolution (same-tenant intent).
     uniqueIndex("UQ_idx_erpnext_posting_status_id_tenant").on(t.id, t.tenantId),

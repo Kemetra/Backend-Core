@@ -27,6 +27,7 @@ import {
   buildWorkItem,
   type PostingWorkItem,
 } from "./posting-work-item.projection";
+import { sanitizeRejectionMessage } from "./rejection-message";
 import { isFeedResponsibilitiesEnabled } from "./responsibilities-feed-gate";
 
 /**
@@ -46,6 +47,18 @@ export const POSTING_FEED_MAX_PAGE = 500;
  * the 017 reconciliation surface drains) is the contract, not the exact number.
  */
 export const POSTING_RETRY_BUDGET = 5;
+
+/**
+ * One dead-letter to record. RT-410: `message` is the Connector's message,
+ * already sanitised (`sanitizeRejectionMessage`); absent / null when
+ * Backend-Core raised the dead-letter itself or nothing was left.
+ */
+interface Rejection {
+  readonly workItemRef: string;
+  readonly category: string;
+  readonly reconciliationDocumentRef?: string | null;
+  readonly message?: string | null;
+}
 
 /** A `posted` ack carries the ERPNext document reference (012 ErpnextDocumentRef). */
 export interface AckDocumentRef {
@@ -314,7 +327,11 @@ export class ErpnextPostingService {
    *                          past the connector's advanced cursor), retry_count++;
    *                          at `POSTING_RETRY_BUDGET` → permanently_rejected
    *                          (category `retry_budget_exhausted`) — bounded re-offer;
-   *   - permanently_rejected → rejection_category stored, dead-lettered (dlqueued).
+   *   - permanently_rejected → rejection_category stored, dead-lettered (dlqueued);
+   *                          RT-410: the Connector's message is stored sanitised
+   *                          (`rejection_message`, never logged), as for
+   *                          reconciliation_required. A dead-letter Backend-Core
+   *                          raises itself (retry budget) stores none.
    *
    * RT-426 (RT-289 G2-3): each transition also moves the Inventory Effects the
    * intent represents, in this same transaction — posted → confirmed,
@@ -466,7 +483,11 @@ export class ErpnextPostingService {
       case "reconciliation_required":
         return this.applyReconciliation(client, input);
       case "permanently_rejected":
-        return this.applyRejected(client, input.workItemRef, input.reason?.category ?? "other");
+        return this.applyRejected(client, {
+          workItemRef: input.workItemRef,
+          category: input.reason?.category ?? "other",
+          message: sanitizeRejectionMessage(input.reason?.message),
+        });
       case "failed_transient":
         return this.applyTransient(client, input.workItemRef, row.retry_count);
     }
@@ -533,32 +554,31 @@ export class ErpnextPostingService {
   /**
    * RT-332: dead-letter the row as `reconciliation_required`, keeping the ERP
    * document the connector reported as evidence (`reconciliation_document_ref`).
+   * RT-410: and the Connector's message, sanitised; a reconciliation recorded
+   * from a superseded `posted` ack carries no reason, so none.
    */
   private applyReconciliation(
     client: PoolClient,
     input: AckOutcomeInput,
   ): Promise<RecordedOutcome> {
-    return this.applyRejected(
-      client,
-      input.workItemRef,
-      RECONCILIATION_REQUIRED_CATEGORY,
-      input.documentRef ? serializeDocRef(input.documentRef) : null,
-    );
+    return this.applyRejected(client, {
+      workItemRef: input.workItemRef,
+      category: RECONCILIATION_REQUIRED_CATEGORY,
+      reconciliationDocumentRef: input.documentRef ? serializeDocRef(input.documentRef) : null,
+      message: sanitizeRejectionMessage(input.reason?.message),
+    });
   }
 
-  private async applyRejected(
-    client: PoolClient,
-    workItemRef: string,
-    category: string,
-    reconciliationDocumentRef: string | null = null,
-  ): Promise<RecordedOutcome> {
+  private async applyRejected(client: PoolClient, rejection: Rejection): Promise<RecordedOutcome> {
+    const { workItemRef, category } = rejection;
+    const reconciliationDocumentRef = rejection.reconciliationDocumentRef ?? null;
     const r = await client.query<{ updated_at: Date }>(
       `UPDATE erpnext_posting_status
           SET status='permanently_rejected', rejection_category=$2,
-              reconciliation_document_ref=$3, updated_at=now()
+              reconciliation_document_ref=$3, rejection_message=$4, updated_at=now()
         WHERE id=$1
         RETURNING updated_at`,
-      [workItemRef, category, reconciliationDocumentRef],
+      [workItemRef, category, reconciliationDocumentRef, rejection.message ?? null],
     );
     // RT-426: the linked effects stand (DC-5) and record why ERP refused them.
     await applyPostingSignalToEffects(client, {
@@ -595,7 +615,7 @@ export class ErpnextPostingService {
     retryCount: number,
   ): Promise<RecordedOutcome> {
     if (retryCount >= POSTING_RETRY_BUDGET) {
-      return this.applyRejected(client, workItemRef, "retry_budget_exhausted");
+      return this.applyRejected(client, { workItemRef, category: "retry_budget_exhausted" });
     }
     const r = await client.query<{ updated_at: Date }>(
       `UPDATE erpnext_posting_status

@@ -60,7 +60,7 @@ function svc(): ErpnextPostingService {
 async function setRow(status: string, version: number): Promise<void> {
   await env!.admin.query(
     `UPDATE erpnext_posting_status
-        SET status = $2, current_resolution_version = $3, rejection_category = NULL,
+        SET rejection_message = NULL, status = $2, current_resolution_version = $3, rejection_category = NULL,
             reconciliation_document_ref = NULL, retry_count = 0,
             document_ref = CASE WHEN $2 = 'posted' THEN $4 ELSE NULL END
       WHERE id = $1`,
