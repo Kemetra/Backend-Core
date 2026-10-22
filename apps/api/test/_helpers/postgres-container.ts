@@ -265,8 +265,8 @@ export async function stopPgEnv(env: PgTestEnv): Promise<void> {
  * which depends on `users.clerk_user_id`, `devices`, and the scope-aware
  * `auth_tokens` CHECK shipped in `0001_pos_operator_identity.sql`.
  *
- * The single-file `applyUpAndCreateAppRole` is preserved for the
- * 0000-only specs that exercise just the foundation slice.
+ * The single-file `applyUpAndCreateAppRole` (0000 only) has no api callers
+ * today; it only works on a private (isolated/fallback) env, never a clone.
  */
 export async function applyAllUpAndCreateAppRole(env: PgTestEnv): Promise<void> {
   // A clone already carries every migration, the role and the grants: the

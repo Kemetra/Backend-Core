@@ -49,7 +49,14 @@ async function buildTemplate(server: { host: string; port: number }): Promise<st
         `SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1`,
         [TEMPLATE_DATABASE],
       );
-      if (rows[0]?.n === 0 || Date.now() > deadline) break;
+      if (rows[0]?.n === 0) break;
+      if (Date.now() > deadline) {
+        process.stderr.write(
+          `\n[rt-815 globalSetup] ${rows[0]?.n} connection(s) still open on ${TEMPLATE_DATABASE} after ` +
+            `${TEMPLATE_IDLE_TIMEOUT_MS} ms; clones may fail with 55006\n`,
+        );
+        break;
+      }
       await new Promise((r) => setTimeout(r, 50));
     }
     await maint.query(`ALTER DATABASE "${TEMPLATE_DATABASE}" WITH IS_TEMPLATE true ALLOW_CONNECTIONS false`);

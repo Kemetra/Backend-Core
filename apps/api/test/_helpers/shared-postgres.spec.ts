@@ -47,9 +47,15 @@ afterAll(async () => {
 }, 120_000);
 
 const shared = readSharedServer();
-const describeShared = shared ? describe : describe.skip;
+// Skip only on the Docker-less local escape hatch; otherwise a missing shared
+// server is a failure, not a silent skip.
+const describeShared = shared || process.env["MIGRATION_TEST_ALLOW_SKIP"] !== "1" ? describe : describe.skip;
 
 describeShared("shared Postgres server (RT-815)", () => {
+  it("globalSetup published a shared server", () => {
+    expect(shared).not.toBeNull();
+  });
+
   it("clone has the full schema and the app role", async () => {
     const env = await open();
     expect(env.cloned).toBe(true);

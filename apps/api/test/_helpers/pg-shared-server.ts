@@ -99,7 +99,8 @@ export async function dropDatabase(server: SharedServer, name: string): Promise<
 
 /**
  * Stable fingerprint of every cluster-wide role attribute a spec could change,
- * including password hashes (`pg_roles` masks `rolpassword`, so `pg_authid`).
+ * including password hashes (`pg_roles` masks `rolpassword`, so `pg_authid`),
+ * memberships and per-role settings.
  */
 export async function snapshotRoles(client: Client): Promise<string> {
   const roles = await client.query(
@@ -114,5 +115,9 @@ export async function snapshotRoles(client: Client): Promise<string> {
        JOIN pg_authid m ON m.oid = am.member
       ORDER BY 1, 2`,
   );
-  return JSON.stringify({ roles: roles.rows, members: members.rows });
+  // `ALTER ROLE … SET …` lives here, and would reach every clone's pools.
+  const settings = await client.query(
+    `SELECT setdatabase, setrole, setconfig FROM pg_db_role_setting ORDER BY 1, 2`,
+  );
+  return JSON.stringify({ roles: roles.rows, members: members.rows, settings: settings.rows });
 }
