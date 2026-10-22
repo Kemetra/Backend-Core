@@ -468,6 +468,21 @@ table the domain role must use needs a matching grant step at deploy time.
   hold no privilege on either (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). 0063 needs no
   maintenance window: the tables are new and every tenant stays OFF.
 
+- **Migration `0068_pos_device_health` (RT-327).** Run
+  [`sql/pos-device-health-domain-grants.sql`](sql/pos-device-health-domain-grants.sql)
+  after `migrate up` and BEFORE the API image that needs it is rolled, in the
+  same step 2 of [`deploy/README.md`](../../deploy/README.md#deploy), with the
+  same `-v domain_role=<role>`. It grants the domain role `SELECT`, `INSERT`
+  and `UPDATE` on `device_health` (every POS heartbeat upserts its device's row
+  and the Console reads it) and on `pos_version_policy` (the heartbeat and the
+  Console read it, the platform change creates and replaces it). Neither has a
+  `DELETE` policy: never grant `DELETE` or `TRUNCATE`. Without the grants the
+  API refuses to boot (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must
+  hold no privilege on either (`AUTH_LOOKUP_FORBIDDEN_GRANTS`): it has
+  `BYPASSRLS`. 0068 needs no maintenance window: both tables are new. Its down
+  migration drops only these two tables and so discards the stored heartbeat
+  telemetry and the version policy.
+
 - **Migration `0070_shift_forced_closes` (RT-742).** Run
   [`sql/shift-forced-closes-domain-grants.sql`](sql/shift-forced-closes-domain-grants.sql)
   after `migrate up` and before the API starts, in the same step 2 of

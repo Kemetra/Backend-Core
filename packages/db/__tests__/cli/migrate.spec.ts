@@ -236,6 +236,7 @@ describe("data-pulse-migrate CLI", () => {
     "0065_stock_movements_store_product_occurred_idx",
     "0066_reconciliation_pending_aware_classes",
     "0067_refund_executions",
+    "0068_pos_device_health",
     "0070_shift_forced_closes",
   ] as const;
 
@@ -547,6 +548,15 @@ describe("data-pulse-migrate CLI", () => {
   }
 
   /**
+   * 0068_pos_device_health (RT-327): [its two tables, their SELECT + INSERT +
+   * UPDATE policies] ("0" and "0" after down).
+   */
+  async function countPosDeviceHealthObjects(): Promise<[string, string]> {
+    const tables = ["device_health", "pos_version_policy"];
+    return [await countPublicTables(tables), await countPolicies(tables)];
+  }
+
+  /**
    * 0070_shift_forced_closes (RT-742): [the force-close table, its SELECT +
    * INSERT policies, its two composite FK targets on shifts and devices].
    */
@@ -562,7 +572,8 @@ describe("data-pulse-migrate CLI", () => {
 
   /**
    * After one `down` from head: 0070's force-close table and its two UNIQUE
-   * targets are gone, while 0067's refund executions, allocation columns,
+   * targets are gone, while 0068's device health and version policy tables,
+   * 0067's refund executions, allocation columns,
    * posting_deferred and original-tender trigger, 0066's
    * pending-aware result classes, 0064-0065's stock-movement history
    * indexes, 0063's anchor tables and activation columns, 0062's
@@ -575,8 +586,14 @@ describe("data-pulse-migrate CLI", () => {
   async function expectOnlyLatestRolledBack(): Promise<void> {
     expect(await countShiftForcedCloseObjects()).toEqual(["0", "0", "0"]);
     await expectShiftCashUpApplied();
+    // 0068's two tables (RT-327) stay.
+    expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
     expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
     expect(await countPendingAwareClassCheck()).toBe("1");
+    expect(
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+        WHERE conname = 'erpnext_reconciliation_result_class_valid'`),
+    ).toBe("1");
     expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
     expect(await countAnchorObjects()).toEqual(["2", "4", "2"]);
     expect(await countSupportSessionObjects()).toEqual(["1", "1", "2", "1"]);
@@ -663,6 +680,8 @@ describe("data-pulse-migrate CLI", () => {
     // 0067's refund_executions (SELECT + INSERT policies), the four allocation
     // / posting columns and the original-tender trigger (RT-787).
     expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
+    // 0068's device health and version policy tables, three policies each (RT-327).
+    expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
     // 0070's force-close table (SELECT + INSERT policies) and its two
     // composite FK targets on shifts and devices (RT-742).
     expect(await countShiftForcedCloseObjects()).toEqual(["1", "2", "2"]);

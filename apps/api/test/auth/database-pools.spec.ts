@@ -72,6 +72,13 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "inventory_anchors:INSERT",
   "inventory_anchor_lines:SELECT",
   "inventory_anchor_lines:INSERT",
+  // RT-327 (0068): POS device health (upserted) and the global version policy (no DELETE).
+  "device_health:SELECT",
+  "device_health:INSERT",
+  "device_health:UPDATE",
+  "pos_version_policy:SELECT",
+  "pos_version_policy:INSERT",
+  "pos_version_policy:UPDATE",
   // RT-742 (0070): the manager's not-counted force close (append-only).
   "shift_forced_closes:SELECT",
   "shift_forced_closes:INSERT",
@@ -333,6 +340,8 @@ describe("database pool boundary", () => {
       "tenant_inventory_settings",
       "inventory_anchors",
       "inventory_anchor_lines",
+      "device_health",
+      "pos_version_policy",
       "shift_forced_closes",
       "platform_support_sessions",
       "sale_reprints",
