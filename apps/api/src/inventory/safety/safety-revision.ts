@@ -83,30 +83,35 @@ export type RecordedChange =
   | { readonly kind: 'recall_created'; readonly inventoryRecallId: string }
   | { readonly kind: 'expiry_corrected'; readonly correctionId: string };
 
+/** The SELECT finding a recorded change's revision by the id it names. */
+const RECORDED_REVISION_SQL: Readonly<Record<RecordedChange['kind'], string>> = {
+  hold_placed: `SELECT revision::text AS revision FROM inventory_safety_changes
+                 WHERE kind = $1 AND tracking_hold_id = $2`,
+  hold_released: `SELECT revision::text AS revision FROM inventory_safety_changes
+                   WHERE kind = $1 AND tracking_hold_id = $2`,
+  recall_created: `SELECT revision::text AS revision FROM inventory_safety_changes
+                    WHERE kind = $1 AND inventory_recall_id = $2`,
+  // The change and its correction share the transaction's now().
+  expiry_corrected: `SELECT c.revision::text AS revision
+                       FROM inventory_safety_changes c
+                       JOIN tracking_identity_expiry_corrections x
+                         ON x.tracking_identity_id = c.tracking_identity_id AND x.created_at = c.created_at
+                      WHERE c.kind = $1 AND x.id = $2`,
+};
+
+/** The id a recorded change is found by. */
+function recordedId(change: RecordedChange): string {
+  if (change.kind === 'recall_created') return change.inventoryRecallId;
+  if (change.kind === 'expiry_corrected') return change.correctionId;
+  return change.trackingHoldId;
+}
+
 /** The revision a recorded command produced (for its replay). */
 export async function recordedRevision(client: PoolClient, change: RecordedChange): Promise<number> {
-  const r =
-    change.kind === 'recall_created'
-      ? await client.query<{ revision: string }>(
-          `SELECT revision::text AS revision FROM inventory_safety_changes
-            WHERE kind = $1 AND inventory_recall_id = $2`,
-          [change.kind, change.inventoryRecallId],
-        )
-      : change.kind === 'expiry_corrected'
-        ? // The change and its correction share the transaction's now().
-          await client.query<{ revision: string }>(
-            `SELECT c.revision::text AS revision
-               FROM inventory_safety_changes c
-               JOIN tracking_identity_expiry_corrections x
-                 ON x.tracking_identity_id = c.tracking_identity_id AND x.created_at = c.created_at
-              WHERE c.kind = $1 AND x.id = $2`,
-            [change.kind, change.correctionId],
-          )
-        : await client.query<{ revision: string }>(
-            `SELECT revision::text AS revision FROM inventory_safety_changes
-              WHERE kind = $1 AND tracking_hold_id = $2`,
-            [change.kind, change.trackingHoldId],
-          );
+  const r = await client.query<{ revision: string }>(RECORDED_REVISION_SQL[change.kind], [
+    change.kind,
+    recordedId(change),
+  ]);
   const row = r.rows[0];
   if (!row) throw new Error(`recordedRevision: no ${change.kind} change recorded`);
   return Number(row.revision);

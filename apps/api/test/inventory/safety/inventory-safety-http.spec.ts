@@ -245,8 +245,11 @@ describe('RT-449 roles (H1, H2)', () => {
 });
 
 describe('RT-449 strict requests', () => {
-  it.each(['place', 'recall', 'expiry'])('the %s command requires the Idempotency-Key header', async (op) => {
-    const [path, body] = op === 'place' ? [PLACE, placeBody] : op === 'recall' ? [RECALLS, recallBody] : [EXPIRY, expiryBody];
+  it.each<[string, string, unknown]>([
+    ['place', PLACE, placeBody],
+    ['recall', RECALLS, recallBody],
+    ['expiry', EXPIRY, expiryBody],
+  ])('the %s command requires the Idempotency-Key header', async (_op, path, body) => {
     await post(path, body, false).expect(400);
     expect(fake.last).toBeNull();
   });

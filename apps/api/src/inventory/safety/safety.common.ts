@@ -11,6 +11,12 @@ import { createHash } from 'node:crypto';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { SAFETY_REASON_CODE_PATTERN, type TrackingHoldKind } from '@data-pulse-2/db';
 
+/** Ascending code-unit order (ids are lower-case hex, so no locale is needed). */
+export function byCodeUnit(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
 /** The same Idempotency-Key reused for a different command (FR-030). */
 export function idempotencyConflict(): ConflictException {
   return new ConflictException({

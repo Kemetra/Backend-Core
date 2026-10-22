@@ -28,6 +28,7 @@ import { placementMoves } from './hold-move.rules';
 import { moveHeldPositions } from './hold-quantity';
 import { bumpSafetyRevision, lockTenantSafety, recordedRevision, recordSafetyChange } from './safety-revision';
 import {
+  byCodeUnit,
   fingerprint,
   idempotencyConflict,
   normalizeNote,
@@ -184,9 +185,9 @@ export class InventoryRecallsService {
     const holds = await holdsOfRecall(client, recall.id);
     const recorded = [
       recall.tenant_product_ref, recall.reason_code, recall.reference, recall.note,
-      holds.map((h) => h.tracking_identity_id).sort(),
+      holds.map((h) => h.tracking_identity_id).sort(byCodeUnit),
     ];
-    const requested = [cmd.tenantProductRef, cmd.reasonCode, cmd.reference, cmd.note, [...cmd.identityIds].sort()];
+    const requested = [cmd.tenantProductRef, cmd.reasonCode, cmd.reference, cmd.note, [...cmd.identityIds].sort(byCodeUnit)];
     const sameTime = cmd.effectiveAt === null || cmd.effectiveAt.getTime() === recall.effective_at.getTime();
     if (!sameTime || JSON.stringify(recorded) !== JSON.stringify(requested)) throw idempotencyConflict();
     return {
@@ -263,7 +264,7 @@ function normalizeRecall(input: CreateRecallInput): RecallCommand {
   }
   return {
     tenantProductRef: input.tenantProductRef.toLowerCase(),
-    identityIds: [...identityIds].sort(),
+    identityIds: [...identityIds].sort(byCodeUnit),
     reasonCode: normalizeReasonCode(input.reasonCode),
     reference,
     note: normalizeNote(input.note),
@@ -275,7 +276,10 @@ function normalizeRecall(input: CreateRecallInput): RecallCommand {
 function normalizeEffectiveAt(effectiveAt: string | null): Date | null {
   if (effectiveAt === null) return null;
   const at = new Date(effectiveAt);
-  if (Number.isNaN(at.getTime())) throw new BadRequestException('effectiveAt must be an ISO 8601 date-time');
+  // Year 1 onwards (the 0045 date range): year 0 would be stored as 1 BC.
+  if (Number.isNaN(at.getTime()) || at.getUTCFullYear() < 1) {
+    throw new BadRequestException('effectiveAt must be an ISO 8601 date-time from year 1');
+  }
   if (at.getTime() > Date.now()) throw new BadRequestException('effectiveAt must not be in the future');
   return at;
 }

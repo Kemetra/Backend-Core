@@ -450,11 +450,12 @@ describe('recall', () => {
     expect(safetyRevision).toBe(before + 1);
     expect(await revisionOf(TENANT_A)).toBe(before + 1);
     expect(recall).toMatchObject({ tenantProductRef: PRODUCT_T, reasonCode: 'authority_notice', reference: 'EDA-2026-117' });
-    expect(recall.holds.map((h) => [h.trackingIdentityId, h.kind, h.recallId]).sort()).toEqual(
+    const byIdentity = (a: string[], b: string[]) => (a[0]! < b[0]! ? -1 : 1);
+    expect(recall.holds.map((h) => [h.trackingIdentityId, h.kind, h.recallId!]).sort(byIdentity)).toEqual(
       [
         [one, 'recall_hold', recall.id],
         [two, 'recall_hold', recall.id],
-      ].sort(),
+      ].sort(byIdentity),
     );
     const changes = await admin().query(
       `SELECT kind, inventory_recall_id::text AS recall FROM inventory_safety_changes WHERE tenant_id = $1 AND revision > $2`,
@@ -489,6 +490,15 @@ describe('recall', () => {
     const identity = await newIdentity();
     const future = new Date(Date.now() + 3_600_000).toISOString();
     await expectNoWrites(() => recalls.createRecall(recallInput([identity], { effectiveAt: future })), BadRequestException);
+  });
+
+  it('refuses an effective time before year 1, which Postgres cannot store (400, not 500), writing nothing', async () => {
+    if (maybeSkip()) return;
+    const identity = await newIdentity();
+    await expectNoWrites(
+      () => recalls.createRecall(recallInput([identity], { effectiveAt: '0000-01-01T00:00:00Z' })),
+      BadRequestException,
+    );
   });
 
   it("refuses an identity of another product or tenant with a non-disclosing 404, writing nothing", async () => {
