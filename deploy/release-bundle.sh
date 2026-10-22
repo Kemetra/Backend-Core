@@ -39,6 +39,7 @@ ALLOWLIST=(
   docs/operations/sql/platform-support-sessions-domain-grants.sql
   docs/operations/sql/inventory-anchors-domain-grants.sql
   docs/operations/sql/refund-executions-domain-grants.sql
+  docs/operations/sql/pos-device-health-domain-grants.sql
   docs/operations/sql/sale-responsibilities-feed-rehead.sql
   docs/operations/sql/erpnext-posting-resolution-catchup.sql
   docs/operations/sql/inventory-effect-integration-catchup.sql

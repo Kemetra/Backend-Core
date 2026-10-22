@@ -27,11 +27,12 @@ info:
     contract is a tenant-session surface only.
 
 
-    **Posture.** `1.0.0-draft`. Every operation is `x-runtime-status:
-    contract-only`: `[GATED]` contract-first (RT-327 comments 13216, 13232,
-    13279). The runtime and the `device_health` / version-policy migration are
-    separate, separately approved steps. Nothing here changes the wire of a
-    served operation.
+    **Posture.** `1.0.0-draft`. `[GATED]` contract-first (RT-327 comments
+    13216, 13232, 13279). Step 1 merged this contract with every operation
+    `x-runtime-status: contract-only`; step 2 (RT-327 comments 13279, 13360,
+    13393) ships the runtime and the `device_health` / `pos_version_policy`
+    migration (`0068`) and removes the marker from all five operations. The
+    wire is exactly as written here.
 
 
     **Naming.** The POS-facing schemas (the heartbeat body and the
@@ -231,11 +232,6 @@ paths:
     post:
       summary: Report a POS device heartbeat and receive the version policy and compatibility signal.
       operationId: posReportDeviceHeartbeat
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-327 step 1 contract. The runtime and the `device_health` /
-        version-policy migration are later, separately approved steps of
-        RT-327. Route behind `PosDeviceAuthGuard`; no `Idempotency-Key`.
       tags: [pos-device-health]
       security:
         - device: []
@@ -281,11 +277,6 @@ paths:
     get:
       summary: List the health of the devices in the caller's scope.
       operationId: consoleListDeviceHealth
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-327 step 1 contract. The runtime and the migration are later,
-        separately approved steps. Guards as `consoleListDevices`
-        (`SessionOnlyAdminGuard` → `TenantContextGuard` → `RolesGuard`).
       tags: [device-health]
       security:
         - cookieAuth: []
@@ -333,10 +324,6 @@ paths:
     get:
       summary: Read one device's health.
       operationId: consoleGetDeviceHealth
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-327 step 1 contract. The runtime and the migration are later,
-        separately approved steps. Guards as `consoleGetDevice`.
       tags: [device-health]
       security:
         - cookieAuth: []
@@ -373,12 +360,6 @@ paths:
     get:
       summary: Read the POS version policy of every channel (platform admins only).
       operationId: platformGetPosVersionPolicy
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-327 step 1 contract. The runtime and the version-policy migration
-        are later, separately approved steps. The controller must NOT use
-        `TenantContextGuard` (support-session enforcement matches it by name)
-        and writes no audit row.
       tags: [pos-version-policy]
       security:
         - cookieAuth: []
@@ -411,12 +392,6 @@ paths:
       summary: Set the POS version policy of one channel (platform admins only).
       operationId: platformSetPosVersionPolicy
       x-audit-action: pos.release_policy.changed
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-327 step 1 contract. The runtime and the version-policy migration
-        are later, separately approved steps. The controller must NOT use
-        `TenantContextGuard`; the audit row is platform-scoped (`tenant_id`
-        null) and written in the change's transaction.
       tags: [pos-version-policy]
       security:
         - cookieAuth: []

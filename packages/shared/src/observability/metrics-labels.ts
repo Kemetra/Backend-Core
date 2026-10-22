@@ -260,6 +260,15 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
   // 009/010/015/017/018 domain-keyed-not-attribute-keyed precedent).
   connector_heartbeat_total: [],
 
+  // ---- POS device heartbeat — RT-327 (AD-DEVICE-001 D-1) ----
+  // Increments once per POS heartbeat that reaches the store step: `outcome`
+  // is the closed set {stored, throttled, refused}. `stored` wrote the device's
+  // row, `throttled` fell inside the 60-second window and wrote nothing,
+  // `refused` is a store that failed (counted and swallowed: the terminal still
+  // gets its 200). NEVER a version, channel, device or tenant label: those are
+  // on `device_health` and are a cardinality + §XIV hazard.
+  pos_device_heartbeat_total: ["outcome"],
+
   // ---- ERPNext product-master reconciliation/repair — 021-POLISH (spec §VII) ----
   // Increments on every operator repair action recorded by 021 (a backlog-item
   // confirm/suggest_confirm or a run-result re_point that drives 013's lifecycle)

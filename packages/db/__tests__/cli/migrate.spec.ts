@@ -236,6 +236,7 @@ describe("data-pulse-migrate CLI", () => {
     "0065_stock_movements_store_product_occurred_idx",
     "0066_reconciliation_pending_aware_classes",
     "0067_refund_executions",
+    "0068_pos_device_health",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -546,8 +547,18 @@ describe("data-pulse-migrate CLI", () => {
   }
 
   /**
-   * After one `down` from head: 0067's refund executions, allocation columns,
-   * posting_deferred and original-tender trigger are gone, while 0066's
+   * 0068_pos_device_health (RT-327): [its two tables, their SELECT + INSERT +
+   * UPDATE policies] ("0" and "0" after down).
+   */
+  async function countPosDeviceHealthObjects(): Promise<[string, string]> {
+    const tables = ["device_health", "pos_version_policy"];
+    return [await countPublicTables(tables), await countPolicies(tables)];
+  }
+
+  /**
+   * After one `down` from head: 0068's device health and version policy tables
+   * are gone, while 0067's refund executions, allocation columns,
+   * posting_deferred and original-tender trigger, 0066's
    * pending-aware result classes, 0064-0065's stock-movement history
    * indexes, 0063's anchor tables and activation columns, 0062's
    * support-session table, 0057-0061's freshness indexes, 0056's event-record and settings tables,
@@ -557,8 +568,14 @@ describe("data-pulse-migrate CLI", () => {
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countRefundExecutionObjects()).toEqual(["0", "0", "0", "0"]);
+    // 0068's two tables (RT-327) are gone; 0067's refund executions and 0066's pending-aware CHECK stay.
+    expect(await countPosDeviceHealthObjects()).toEqual(["0", "0"]);
+    expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
     expect(await countPendingAwareClassCheck()).toBe("1");
+    expect(
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+        WHERE conname = 'erpnext_reconciliation_result_class_valid'`),
+    ).toBe("1");
     expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
     expect(await countAnchorObjects()).toEqual(["2", "4", "2"]);
     expect(await countSupportSessionObjects()).toEqual(["1", "1", "2", "1"]);
@@ -645,6 +662,8 @@ describe("data-pulse-migrate CLI", () => {
     // 0067's refund_executions (SELECT + INSERT policies), the four allocation
     // / posting columns and the original-tender trigger (RT-787).
     expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
+    // 0068's device health and version policy tables, three policies each (RT-327).
+    expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
   }
 
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */
@@ -797,7 +816,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0067 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0068 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();

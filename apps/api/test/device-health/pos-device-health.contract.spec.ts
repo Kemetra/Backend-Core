@@ -2,15 +2,14 @@
  * apps/api/test/device-health/pos-device-health.contract.spec.ts
  *
  * RT-327 step 1 (AD-DEVICE-001, ratified 2026-10-21 with D-5 and D-7 amended):
- * `pos-device-health.openapi.yaml`. `[GATED]` contract-first; every operation
- * is `x-runtime-status: contract-only` until the runtime and the
- * `device_health` / version-policy migration ship as later, separately
- * approved steps.
+ * `pos-device-health.openapi.yaml`. `[GATED]` contract-first: step 1 merged it
+ * with every operation `x-runtime-status: contract-only`; step 2 (the runtime
+ * and migration 0068) removed the marker, which this spec pins as absent.
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP. Pinned here:
  *
- *   1. The five operations: paths, contract-only with a note, one audited
+ *   1. The five operations: paths, no contract-only marker, one audited
  *      write, no operationId collision.
  *   2. Auth and refusals per principal: device bearer, tenant session (404,
  *      never 403), platform session (403, never 404).
@@ -137,10 +136,11 @@ describe("pos device health contract — operations", () => {
     expect(declared).toEqual(EXPECTED);
   });
 
-  it.each(EXPECTED)("%s %s (%s) is contract-only with a note and collides with no other contract", (method, path, id) => {
+  it.each(EXPECTED)("%s %s (%s) has a runtime (no contract-only marker) and collides with no other contract", (method, path, id) => {
     const op = contract.operation(method as "get", path as `/${string}`);
-    expect(op["x-runtime-status"]).toBe("contract-only");
-    expect(String(op["x-runtime-note"]).trim().length).toBeGreaterThan(0);
+    // RT-327 step 2 lifted the step 1 marker: the runtime ships with migration 0068.
+    expect(op["x-runtime-status"]).toBeUndefined();
+    expect(op["x-runtime-note"]).toBeUndefined();
     expect(contract.foreignOperationIds.has(id)).toBe(false);
   });
 
