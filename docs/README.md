@@ -56,3 +56,5 @@ The README and architecture docs use GitHub-renderable SVG and Mermaid:
 - Treat `packages/contracts/openapi` as the contract source of truth.
 - Keep tenant isolation, auditability, and data integrity visible in
   documentation for any platform behavior.
+
+<!-- RT-816 low-tier probe, do not merge -->
