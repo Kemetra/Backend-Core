@@ -44,10 +44,15 @@ import {
   inventoryAnchors,
   inventoryEffectIntegration,
   inventoryPositionEvents,
+  inventoryRecalls,
+  inventorySafetyChanges,
   stockCounts,
   stockMovements,
+  tenantInventorySafetyRevisions,
   tenantInventorySettings,
+  trackingHolds,
   trackingIdentities,
+  trackingIdentityExpiryCorrections,
 } from '@data-pulse-2/db/schema';
 
 function persistedColumns(table: unknown): string[] {
@@ -181,6 +186,7 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
   {
     // RT-435 (0056): the per-tenant return landing status and its actor.
     // RT-427 (0063): the sale-effects activation time and its actor.
+    // RT-449 (0072): the POS Safety TTL in seconds.
     name: 'tenant_inventory_settings',
     table: tenantInventorySettings,
     columns: [
@@ -188,9 +194,93 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       'return_landing_status',
       'sale_effects_activated_at',
       'sale_effects_activated_by',
+      'safety_ttl_seconds',
       'updated_by',
       'created_at',
       'updated_at',
+    ],
+  },
+  {
+    // RT-449 (0072): the tenant's Inventory Safety Revision — a counter.
+    name: 'tenant_inventory_safety_revisions',
+    table: tenantInventorySafetyRevisions,
+    columns: ['tenant_id', 'revision', 'created_at', 'updated_at'],
+  },
+  {
+    // RT-449 (0072): one change per revision step — a kind code and opaque ids.
+    name: 'inventory_safety_changes',
+    table: inventorySafetyChanges,
+    columns: [
+      'id',
+      'tenant_id',
+      'revision',
+      'kind',
+      'tracking_hold_id',
+      'inventory_recall_id',
+      'tracking_identity_id',
+      'tenant_product_ref',
+      'created_by',
+      'created_at',
+    ],
+  },
+  {
+    // RT-449 (0072): a Recall — a reason code, an authority reference (a
+    // notice number; no PII by policy), a bounded operator note, a SHA-256
+    // fingerprint (never the raw Idempotency-Key) and timestamps.
+    name: 'inventory_recalls',
+    table: inventoryRecalls,
+    columns: [
+      'id',
+      'tenant_id',
+      'tenant_product_ref',
+      'reason_code',
+      'reference',
+      'note',
+      'effective_at',
+      'command_fingerprint',
+      'created_by',
+      'created_at',
+    ],
+  },
+  {
+    // RT-449 (0072): a hold on an identity — codes, opaque ids, bounded
+    // operator notes, a SHA-256 fingerprint, actors and timestamps.
+    name: 'tracking_holds',
+    table: trackingHolds,
+    columns: [
+      'id',
+      'tenant_id',
+      'tracking_identity_id',
+      'tenant_product_ref',
+      'kind',
+      'reason_code',
+      'note',
+      'recall_id',
+      'command_fingerprint',
+      'placed_by',
+      'placed_at',
+      'released_by',
+      'released_at',
+      'release_note',
+    ],
+  },
+  {
+    // RT-449 (0072): the expiry correction history — dates, a reason code, a
+    // bounded note, a SHA-256 fingerprint, the actor and a timestamp.
+    name: 'tracking_identity_expiry_corrections',
+    table: trackingIdentityExpiryCorrections,
+    columns: [
+      'id',
+      'tenant_id',
+      'tracking_identity_id',
+      'tenant_product_ref',
+      'old_expiry_date',
+      'new_expiry_date',
+      'reason_code',
+      'note',
+      'command_fingerprint',
+      'created_by',
+      'created_at',
     ],
   },
   {

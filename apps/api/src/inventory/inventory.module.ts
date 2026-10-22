@@ -31,6 +31,10 @@ import { InventoryController } from "./inventory.controller";
 import { InventoryService } from "./inventory.service";
 import { InventoryPositionEventsController } from "./position-events/position-events.controller";
 import { InventoryPositionEventsService } from "./position-events/position-events.service";
+import { IdentityExpiryService } from "./safety/identity-expiry.service";
+import { InventoryRecallsService } from "./safety/inventory-recalls.service";
+import { InventorySafetyController } from "./safety/inventory-safety.controller";
+import { TrackingHoldsService } from "./safety/tracking-holds.service";
 import { TrackingIdentitiesController } from "./tracking-identities.controller";
 
 /**
@@ -54,8 +58,22 @@ import { TrackingIdentitiesController } from "./tracking-identities.controller";
   imports: [AuthModule, ContextModule, IdempotencyModule],
   // RT-435: status moves, relocations and the return landing policy
   // (RolesGuard; the service reads the caller's role for sensitive moves).
-  controllers: [InventoryController, TrackingIdentitiesController, InventoryPositionEventsController],
-  providers: [InventoryService, InventoryPositionEventsService, RolesGuard],
+  // RT-449: tracking holds, recall and identity expiry correction
+  // (tenant-level, RolesGuard; each command steps the Safety Revision).
+  controllers: [
+    InventoryController,
+    TrackingIdentitiesController,
+    InventoryPositionEventsController,
+    InventorySafetyController,
+  ],
+  providers: [
+    InventoryService,
+    InventoryPositionEventsService,
+    TrackingHoldsService,
+    InventoryRecallsService,
+    IdentityExpiryService,
+    RolesGuard,
+  ],
   exports: [InventoryService],
 })
 export class InventoryModule {}
