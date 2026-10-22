@@ -817,9 +817,10 @@ components:
             exports or analytics.
 
 
-            Runtime transition: until the RT-410 storage and write path ship,
-            the server still returns the category text here. Consumers must
-            not depend on that, or on `reason` equalling `rejectionCategory`.
+            Runtime: the RT-410 storage (migration 0071) and write path have
+            shipped, so the server returns the stored message here, or null in
+            the cases above, and never the category text. Consumers must not
+            depend on `reason` equalling `rejectionCategory`.
         deadLetteredAt:
           type: string
           format: date-time

@@ -235,6 +235,7 @@ describe("data-pulse-migrate CLI", () => {
     "0064_stock_movements_store_occurred_idx",
     "0065_stock_movements_store_product_occurred_idx",
     "0066_reconciliation_pending_aware_classes",
+    "0071_erpnext_posting_rejection_message",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -524,8 +525,19 @@ describe("data-pulse-migrate CLI", () => {
   }
 
   /**
-   * After one `down` from head: 0066's pending-aware result classes are gone
-   * (the 0020 CHECK is back), while 0064-0065's stock-movement history
+   * 0071_erpnext_posting_rejection_message (RT-410): [the rejection_message
+   * column, its two validated CHECKs].
+   */
+  async function countRejectionMessageObjects(): Promise<[string, string]> {
+    const checks = await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+      WHERE conname IN ('erpnext_posting_status_rejection_message_length',
+                        'erpnext_posting_status_rejection_message_when_rejected') AND convalidated`);
+    return [await countPublicColumn("erpnext_posting_status", "rejection_message"), checks];
+  }
+
+  /**
+   * After one `down` from head: 0071's rejection_message column and its CHECKs
+   * are gone, while 0066's pending-aware result classes, 0064-0065's stock-movement history
    * indexes, 0063's anchor tables and activation columns, 0062's
    * support-session table, 0057-0061's freshness indexes, 0056's event-record and settings tables,
    * 0055's AI entitlement tables and functions, 0054's credit reversal
@@ -534,11 +546,8 @@ describe("data-pulse-migrate CLI", () => {
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countPendingAwareClassCheck()).toBe("0");
-    expect(
-      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
-        WHERE conname = 'erpnext_reconciliation_result_class_valid'`),
-    ).toBe("1");
+    expect(await countRejectionMessageObjects()).toEqual(["0", "0"]);
+    expect(await countPendingAwareClassCheck()).toBe("1");
     expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
     expect(await countAnchorObjects()).toEqual(["2", "4", "2"]);
     expect(await countSupportSessionObjects()).toEqual(["1", "1", "2", "1"]);
@@ -622,6 +631,8 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
     // 0066's widened, validated result-class CHECK (RT-428).
     expect(await countPendingAwareClassCheck()).toBe("1");
+    // 0071's rejection_message column and its two validated CHECKs (RT-410).
+    expect(await countRejectionMessageObjects()).toEqual(["1", "2"]);
   }
 
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */
@@ -774,7 +785,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0066 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0071 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();

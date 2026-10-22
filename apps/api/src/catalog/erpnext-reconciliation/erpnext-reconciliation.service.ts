@@ -212,7 +212,7 @@ export class ErpnextReconciliationService {
         const rows = await client.query<BacklogDbRow>(
           `SELECT id, kind, rejection_category, sale_id,
                   source_system, external_id, updated_at,
-                  reconciliation_document_ref,
+                  reconciliation_document_ref, rejection_message,
                   sequence::text AS sequence
              FROM erpnext_posting_status
             WHERE status = 'permanently_rejected'
@@ -315,7 +315,9 @@ export class ErpnextReconciliationService {
    * read), do not re-offer, since a pending row without a version would fall
    * back to the live join. Otherwise flip to pending, re-head the sequence,
    * RESET retry_count, point at the frozen version and move the intent's
-   * rejected Inventory Effects back to pending (RT-426). Do NOT touch
+   * rejected Inventory Effects back to pending (RT-426). RT-410: clear the
+   * stored rejection message, which exists only while the row is dead-lettered
+   * (a later rejection stores a fresh one). Do NOT touch
    * document_ref (NULL on a non-posted row; the
    * (status='posted')=(document_ref IS NOT NULL) CHECK would otherwise bite).
    */
@@ -336,7 +338,7 @@ export class ErpnextReconciliationService {
     }
     await client.query(
       `UPDATE erpnext_posting_status
-          SET status = 'pending', sequence = DEFAULT,
+          SET status = 'pending', sequence = DEFAULT, rejection_message = NULL,
               retry_count = $2, current_resolution_version = $3,
               updated_at = now()
         WHERE id = $1`,
