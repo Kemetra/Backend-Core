@@ -28,7 +28,7 @@ import { placementMoves } from './hold-move.rules';
 import { moveHeldPositions } from './hold-quantity';
 import { bumpSafetyRevision, lockTenantSafety, recordedRevision, recordSafetyChange } from './safety-revision';
 import {
-  byCodeUnit,
+  byText,
   fingerprint,
   idempotencyConflict,
   normalizeNote,
@@ -106,7 +106,7 @@ export class InventoryRecallsService {
 
   async createRecall(input: CreateRecallInput): Promise<InventoryRecallResult> {
     const cmd = normalizeRecall(input);
-    return runWithTenantContext(this.pool, { tenantId: input.tenantId, isPlatformAdmin: false }, async (client) => {
+    return await runWithTenantContext(this.pool, { tenantId: input.tenantId, isPlatformAdmin: false }, async (client) => {
       await lockTenantSafety(client, input.tenantId);
       const replay = await this.findByFingerprint(client, cmd.fingerprint);
       if (replay) return this.replayResult(client, replay, cmd);
@@ -185,9 +185,9 @@ export class InventoryRecallsService {
     const holds = await holdsOfRecall(client, recall.id);
     const recorded = [
       recall.tenant_product_ref, recall.reason_code, recall.reference, recall.note,
-      holds.map((h) => h.tracking_identity_id).sort(byCodeUnit),
+      holds.map((h) => h.tracking_identity_id).sort(byText),
     ];
-    const requested = [cmd.tenantProductRef, cmd.reasonCode, cmd.reference, cmd.note, [...cmd.identityIds].sort(byCodeUnit)];
+    const requested = [cmd.tenantProductRef, cmd.reasonCode, cmd.reference, cmd.note, [...cmd.identityIds].sort(byText)];
     const sameTime = cmd.effectiveAt === null || cmd.effectiveAt.getTime() === recall.effective_at.getTime();
     if (!sameTime || JSON.stringify(recorded) !== JSON.stringify(requested)) throw idempotencyConflict();
     return {
@@ -264,7 +264,7 @@ function normalizeRecall(input: CreateRecallInput): RecallCommand {
   }
   return {
     tenantProductRef: input.tenantProductRef.toLowerCase(),
-    identityIds: [...identityIds].sort(byCodeUnit),
+    identityIds: [...identityIds].sort(byText),
     reasonCode: normalizeReasonCode(input.reasonCode),
     reference,
     note: normalizeNote(input.note),

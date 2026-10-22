@@ -107,6 +107,11 @@ interface EventRow {
   occurred_at: Date;
 }
 
+/** The effect columns, qualified by the `m` alias of `stock_movements`. */
+const MOVEMENT_COLUMNS_M = MOVEMENT_COLUMNS.split(', ')
+  .map((c) => 'm.' + c)
+  .join(', ');
+
 const EVENT_COLUMNS =
   'id, kind, store_id, tenant_product_ref, quantity::text AS quantity, stocking_unit, ' +
   'from_location_id, to_location_id, from_status, to_status, reason_code, note, ' +
@@ -251,7 +256,7 @@ async function findReplay(client: PoolClient, cmd: PositionCommand): Promise<Inv
     });
   }
   const effects = await client.query<MovementRow>(
-    `SELECT ${MOVEMENT_COLUMNS.split(', ').map((c) => `m.${c}`).join(', ')},
+    `SELECT ${MOVEMENT_COLUMNS_M},
             i.state AS integration_state, i.erp_confirmed_at, m.external_id
        FROM stock_movements m
        LEFT JOIN inventory_effect_integration i ON i.effect_id = m.id

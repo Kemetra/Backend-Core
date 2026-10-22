@@ -90,7 +90,7 @@ export class IdentityExpiryService {
     const reasonCode = normalizeReasonCode(input.reasonCode);
     const note = normalizeNote(input.note);
     const commandFingerprint = fingerprint(['expiry_correction', input.userId.toLowerCase(), input.idempotencyKey]);
-    return runWithTenantContext(this.pool, { tenantId: input.tenantId, isPlatformAdmin: false }, async (client) => {
+    return await runWithTenantContext(this.pool, { tenantId: input.tenantId, isPlatformAdmin: false }, async (client) => {
       await lockTenantSafety(client, input.tenantId);
       const replay = await this.findByFingerprint(client, commandFingerprint);
       if (replay) {

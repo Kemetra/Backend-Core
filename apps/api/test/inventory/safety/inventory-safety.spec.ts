@@ -71,9 +71,9 @@ let primaryAX = '';
 let primaryAY = '';
 let seq = 0;
 
-function next(prefix: string): string {
+function nextSeq(): string {
   seq += 1;
-  return `${prefix}-${String(seq).padStart(6, '0')}`;
+  return String(seq).padStart(6, '0');
 }
 
 function admin(): Pool {
@@ -89,25 +89,29 @@ async function newIdentity(
   const r = await admin().query<{ id: string }>(
     `INSERT INTO tracking_identities (tenant_id, tenant_product_ref, kind, code, expiry_date, manufactured_on)
      VALUES ($1, $2, 'batch', $3, $4, $5) RETURNING id::text AS id`,
-    [opts.tenantId ?? TENANT_A, product, next('LOT'), opts.expiry ?? null, opts.manufacturedOn ?? null],
+    [opts.tenantId ?? TENANT_A, product, `LOT-${nextSeq()}`, opts.expiry ?? null, opts.manufacturedOn ?? null],
   );
   return r.rows[0]!.id;
 }
 
-/** Seed one identity-grain effect (the fixture RT-451 will write for real). */
-async function seedEffect(
-  identityId: string,
-  at: { storeId: string; locationId: string; status: string },
-  quantity: string,
-  product = PRODUCT_T,
-): Promise<void> {
+/** One identity-grain effect: the identity, its position and a signed quantity. */
+interface SeededEffect {
+  readonly identity: string;
+  readonly storeId: string;
+  readonly locationId: string;
+  readonly status: string;
+  readonly quantity: string;
+}
+
+/** Seed one identity-grain effect of PRODUCT_T (the fixture RT-451 will write for real). */
+async function seedEffect(e: SeededEffect): Promise<void> {
   await admin().query(
     `INSERT INTO stock_movements
        (id, tenant_id, store_id, movement_type, quantity, stocking_unit, tenant_product_ref, reason,
         occurred_at, created_by, stock_location_id, inventory_status, tracking_identity_id)
      VALUES (gen_random_uuid(), $1, $2, 'adjustment', $3::numeric, 'ea', $4, 'rt449 fixture', now(), $5,
              $6, $7, $8)`,
-    [TENANT_A, at.storeId, quantity, product, ACTOR_A, at.locationId, at.status, identityId],
+    [TENANT_A, e.storeId, e.quantity, PRODUCT_T, ACTOR_A, e.locationId, e.status, e.identity],
   );
 }
 
@@ -162,7 +166,7 @@ async function expectNoWrites(fn: () => Promise<unknown>, error: new (...args: n
 }
 
 function base() {
-  return { tenantId: TENANT_A, userId: ACTOR_A, idempotencyKey: next('rt449-key') } as const;
+  return { tenantId: TENANT_A, userId: ACTOR_A, idempotencyKey: `rt449-key-${nextSeq()}` } as const;
 }
 
 function placeInput(identityId: string, overrides: Record<string, unknown> = {}) {
@@ -273,12 +277,12 @@ describe('quality hold placement', () => {
   it('moves every positive sellable / return_inspection position into quality_hold as erp_neutral effect pairs', async () => {
     if (maybeSkip()) return;
     const identity = await newIdentity();
-    await seedEffect(identity, { storeId: STORE_A_X, locationId: primaryAX, status: 'sellable' }, '10');
-    await seedEffect(identity, { storeId: STORE_A_Y, locationId: primaryAY, status: 'return_inspection' }, '4.5');
+    await seedEffect({ identity: identity, storeId: STORE_A_X, locationId: primaryAX, status: 'sellable', quantity: '10' });
+    await seedEffect({ identity: identity, storeId: STORE_A_Y, locationId: primaryAY, status: 'return_inspection', quantity: '4.5' });
     // A negative position stays where it is (a finding, never moved).
-    await seedEffect(identity, { storeId: STORE_A_X, locationId: BACKROOM_A_X, status: 'sellable' }, '-2');
+    await seedEffect({ identity: identity, storeId: STORE_A_X, locationId: BACKROOM_A_X, status: 'sellable', quantity: '-2' });
     // A damaged position is not a placement source.
-    await seedEffect(identity, { storeId: STORE_A_Y, locationId: primaryAY, status: 'damaged' }, '1');
+    await seedEffect({ identity: identity, storeId: STORE_A_Y, locationId: primaryAY, status: 'damaged', quantity: '1' });
 
     const { hold } = await holds.placeQualityHold(placeInput(identity));
 
@@ -329,7 +333,7 @@ describe('quality hold placement', () => {
   it('replays the same command without writing; the same key for another command is a 409', async () => {
     if (maybeSkip()) return;
     const identity = await newIdentity();
-    await seedEffect(identity, { storeId: STORE_A_X, locationId: primaryAX, status: 'sellable' }, '3');
+    await seedEffect({ identity: identity, storeId: STORE_A_X, locationId: primaryAX, status: 'sellable', quantity: '3' });
     const input = placeInput(identity);
     const first = await holds.placeQualityHold(input);
     const before = await writeCounts();
@@ -370,7 +374,7 @@ describe('hold release', () => {
   it('H3: returns quality_hold to sellable as hold_release pairs, steps the revision once, and is final', async () => {
     if (maybeSkip()) return;
     const identity = await newIdentity();
-    await seedEffect(identity, { storeId: STORE_A_X, locationId: primaryAX, status: 'sellable' }, '6');
+    await seedEffect({ identity: identity, storeId: STORE_A_X, locationId: primaryAX, status: 'sellable', quantity: '6' });
     const { hold } = await holds.placeQualityHold(placeInput(identity));
     const before = await revisionOf(TENANT_A);
 
@@ -397,7 +401,7 @@ describe('hold release', () => {
   it('H3 under an active recall: quality_hold goes to recall_hold, never back to sellable', async () => {
     if (maybeSkip()) return;
     const identity = await newIdentity();
-    await seedEffect(identity, { storeId: STORE_A_X, locationId: primaryAX, status: 'sellable' }, '5');
+    await seedEffect({ identity: identity, storeId: STORE_A_X, locationId: primaryAX, status: 'sellable', quantity: '5' });
     const { hold } = await holds.placeQualityHold(placeInput(identity));
     await recalls.createRecall(recallInput([identity]));
     await holds.releaseHold({ tenantId: TENANT_A, userId: ACTOR_A, holdId: hold.id, note: null });
@@ -409,7 +413,7 @@ describe('hold release', () => {
   it("H4: releasing a recall hold ends the record and moves no quantity", async () => {
     if (maybeSkip()) return;
     const identity = await newIdentity();
-    await seedEffect(identity, { storeId: STORE_A_X, locationId: primaryAX, status: 'sellable' }, '2');
+    await seedEffect({ identity: identity, storeId: STORE_A_X, locationId: primaryAX, status: 'sellable', quantity: '2' });
     const { recall } = await recalls.createRecall(recallInput([identity]));
     const recallHold = recall.holds[0]!;
     const before = await writeCounts();
@@ -441,8 +445,8 @@ describe('recall', () => {
     if (maybeSkip()) return;
     const one = await newIdentity();
     const two = await newIdentity();
-    await seedEffect(one, { storeId: STORE_A_X, locationId: primaryAX, status: 'sellable' }, '7');
-    await seedEffect(two, { storeId: STORE_A_Y, locationId: primaryAY, status: 'return_inspection' }, '1');
+    await seedEffect({ identity: one, storeId: STORE_A_X, locationId: primaryAX, status: 'sellable', quantity: '7' });
+    await seedEffect({ identity: two, storeId: STORE_A_Y, locationId: primaryAY, status: 'return_inspection', quantity: '1' });
     const before = await revisionOf(TENANT_A);
 
     const { recall, safetyRevision } = await recalls.createRecall(recallInput([one, two]));
@@ -450,7 +454,7 @@ describe('recall', () => {
     expect(safetyRevision).toBe(before + 1);
     expect(await revisionOf(TENANT_A)).toBe(before + 1);
     expect(recall).toMatchObject({ tenantProductRef: PRODUCT_T, reasonCode: 'authority_notice', reference: 'EDA-2026-117' });
-    const byIdentity = (a: string[], b: string[]) => (a[0]! < b[0]! ? -1 : 1);
+    const byIdentity = (a: string[], b: string[]) => a[0]!.localeCompare(b[0]!);
     expect(recall.holds.map((h) => [h.trackingIdentityId, h.kind, h.recallId!]).sort(byIdentity)).toEqual(
       [
         [one, 'recall_hold', recall.id],
@@ -523,16 +527,16 @@ describe('recall', () => {
 });
 
 describe('identity expiry correction (G7-2)', () => {
-  function correction(identityId: string, expiryDate: string | null, overrides: Record<string, unknown> = {}) {
-    return { ...base(), trackingIdentityId: identityId, expiryDate, reasonCode: 'label_misprint', note: null, ...overrides };
+  function correction(identityId: string, fields: { readonly expiryDate: string | null }) {
+    return { ...base(), trackingIdentityId: identityId, reasonCode: 'label_misprint', note: null, ...fields };
   }
 
   it('keeps its history: every correction is a row (old -> new) and a revision step', async () => {
     if (maybeSkip()) return;
     const identity = await newIdentity(PRODUCT_T, { expiry: '2027-01-31' });
     const before = await revisionOf(TENANT_A);
-    const first = await expiry.correctExpiry(correction(identity, '2027-03-31'));
-    const second = await expiry.correctExpiry(correction(identity, null));
+    const first = await expiry.correctExpiry(correction(identity, { expiryDate: '2027-03-31' }));
+    const second = await expiry.correctExpiry(correction(identity, { expiryDate: null }));
     expect(first.correction).toMatchObject({ oldExpiryDate: '2027-01-31', newExpiryDate: '2027-03-31' });
     expect(second.correction).toMatchObject({ oldExpiryDate: '2027-03-31', newExpiryDate: null });
     expect([first.safetyRevision, second.safetyRevision]).toEqual([before + 1, before + 2]);
@@ -557,7 +561,7 @@ describe('identity expiry correction (G7-2)', () => {
   it('replays the same command without writing', async () => {
     if (maybeSkip()) return;
     const identity = await newIdentity(PRODUCT_T, { expiry: '2027-01-31' });
-    const input = correction(identity, '2027-02-28');
+    const input = correction(identity, { expiryDate: '2027-02-28' });
     const first = await expiry.correctExpiry(input);
     const before = await writeCounts();
     expect(await expiry.correctExpiry(input)).toEqual(first);
@@ -567,13 +571,13 @@ describe('identity expiry correction (G7-2)', () => {
   it('refuses an unchanged expiry (409) and one before manufacture (400), writing nothing', async () => {
     if (maybeSkip()) return;
     const identity = await newIdentity(PRODUCT_T, { expiry: '2027-01-31', manufacturedOn: '2026-01-01' });
-    await expectNoWrites(() => expiry.correctExpiry(correction(identity, '2027-01-31')), ConflictException);
-    await expectNoWrites(() => expiry.correctExpiry(correction(identity, '2025-12-31')), BadRequestException);
+    await expectNoWrites(() => expiry.correctExpiry(correction(identity, { expiryDate: '2027-01-31' })), ConflictException);
+    await expectNoWrites(() => expiry.correctExpiry(correction(identity, { expiryDate: '2025-12-31' })), BadRequestException);
   });
 
   it("refuses another tenant's identity with a non-disclosing 404, writing nothing", async () => {
     if (maybeSkip()) return;
-    await expectNoWrites(() => expiry.correctExpiry(correction(IDENTITY_B, '2027-01-31')), NotFoundException);
+    await expectNoWrites(() => expiry.correctExpiry(correction(IDENTITY_B, { expiryDate: '2027-01-31' })), NotFoundException);
   });
 });
 
@@ -600,8 +604,8 @@ describe('store scope', () => {
   it('a hold reaches the identity at every store of the tenant, never another tenant', async () => {
     if (maybeSkip()) return;
     const identity = await newIdentity();
-    await seedEffect(identity, { storeId: STORE_A_X, locationId: primaryAX, status: 'sellable' }, '1');
-    await seedEffect(identity, { storeId: STORE_A_Y, locationId: primaryAY, status: 'sellable' }, '1');
+    await seedEffect({ identity: identity, storeId: STORE_A_X, locationId: primaryAX, status: 'sellable', quantity: '1' });
+    await seedEffect({ identity: identity, storeId: STORE_A_Y, locationId: primaryAY, status: 'sellable', quantity: '1' });
     const bBefore = await admin().query(`SELECT count(*)::int AS n FROM stock_movements WHERE store_id = $1`, [STORE_B_X]);
     await holds.placeQualityHold(placeInput(identity));
     expect((await positions(identity)).map((p) => [p.store, p.status])).toEqual([

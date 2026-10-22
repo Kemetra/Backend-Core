@@ -83,7 +83,7 @@ export class TrackingHoldsService {
     const reasonCode = normalizeReasonCode(input.reasonCode);
     const note = normalizeNote(input.note);
     const commandFingerprint = fingerprint(['quality_hold', input.userId.toLowerCase(), input.idempotencyKey]);
-    return runWithTenantContext(this.pool, { tenantId: input.tenantId, isPlatformAdmin: false }, async (client) => {
+    return await runWithTenantContext(this.pool, { tenantId: input.tenantId, isPlatformAdmin: false }, async (client) => {
       await lockTenantSafety(client, input.tenantId);
       const replay = await this.findPlacement(client, commandFingerprint);
       if (replay) {
@@ -136,7 +136,7 @@ export class TrackingHoldsService {
 
   async releaseHold(input: ReleaseHoldInput): Promise<TrackingHoldResult> {
     const note = normalizeNote(input.note);
-    return runWithTenantContext(this.pool, { tenantId: input.tenantId, isPlatformAdmin: false }, async (client) => {
+    return await runWithTenantContext(this.pool, { tenantId: input.tenantId, isPlatformAdmin: false }, async (client) => {
       await lockTenantSafety(client, input.tenantId);
       const current = await findHold(client, input.holdId, true);
       if (!current) throw new NotFoundException('Not Found');
