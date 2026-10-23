@@ -125,10 +125,16 @@ mainSteps:
           # psql client for grants and catch-up (lab-01 has no psql); bash is needed by apply-domain-grants.sh.
           PSQL_IMAGE=postgres:16-bookworm@sha256:d81f7b51697014367236d07ec58b54153fc28f828b72bf247fe5c7487520bcb0
           REVERT_AFTER=15min
-          # Containers are recreated only while at least 3 minutes of the revert window remain.
-          MAX_SECONDS_BEFORE_START=720
+          REVERT_SECONDS=900
           BACKUP_MAX_AGE_SECONDS=7200
           READY_TIMEOUT_SECONDS=180
+          # Everything after the start must fit the revert window: compose up (images are pulled
+          # before the revert is armed) + the second catch-up, readiness, console-smoke (8 requests
+          # of at most 10 s each) and a cancellation margin. Containers start only within the rest.
+          POST_START_SECONDS=120
+          SMOKE_SECONDS=90
+          CANCEL_MARGIN_SECONDS=60
+          MAX_SECONDS_BEFORE_START=$(( REVERT_SECONDS - POST_START_SECONDS - READY_TIMEOUT_SECONDS - SMOKE_SECONDS - CANCEL_MARGIN_SECONDS ))
           MAX_ASSET_BYTES=$((16 * 1024 * 1024))
 
           GATE=inputs
@@ -206,6 +212,11 @@ mainSteps:
             want="$(image_id "$2")" || return 1
             [ -n "$want" ] && [ "$have" = "$want" ]
           }
+          # HTTP status of /health/ready on the origin (Caddy on this host, port 80, as the tunnel reaches it).
+          origin_ready_code() {
+            curl -sS -o /dev/null -w '%{http_code}' --max-time 5 --resolve "$ORIGIN_HOST:80:127.0.0.1" \
+              "http://$ORIGIN_HOST/api/v1/health/ready" </dev/null || true
+          }
 
           # ---------------------------------------------------------------- G-Host
           GATE=G-Host
@@ -221,6 +232,14 @@ mainSteps:
           PRIOR_MIGRATE="$(env_value "$CUR_DIR/release.env" DP2_MIGRATE_IMAGE)" || stop "current-release-env-unreadable"
           running_matches api "$PRIOR_API" || stop "running-api-is-not-the-current-release"
           running_matches worker "$PRIOR_WORKER" || stop "running-worker-is-not-the-current-release"
+          # The readiness probe G-Ready uses must already work on the current release, before anything
+          # changes. A redirect means Caddy serves HTTPS here (bare CADDY_SITE_ADDRESS), not the contract.
+          CODE="$(origin_ready_code)"
+          case "$CODE" in
+            200) ;;
+            3??) stop "origin-port-80-redirects-CADDY_SITE_ADDRESS-must-be-http-scheme" ;;
+            *) stop "origin-health-ready-not-200-on-the-current-release" ;;
+          esac
           say "RT_PRIOR api=${PRIOR_API##*@} worker=${PRIOR_WORKER##*@} migrate=${PRIOR_MIGRATE##*@} sentry_release=$SENTRY"
           pass G-Host
 
@@ -262,6 +281,10 @@ mainSteps:
           [ "$(env_value "$TGT_DIR/release.env" DP2_WORKER_IMAGE)" = "$WORKER_REF" ] || stop "release-env-worker-is-not-WorkerDigest"
           [ "$(env_value "$TGT_DIR/release.env" DP2_MIGRATE_IMAGE)" = "$MIGRATE_REF" ] || stop "release-env-migrate-is-not-MigrateDigest"
           [ -f "$TGT_DIR/deploy/apply-domain-grants.sh" ] && [ -f "$TGT_DIR/deploy/console-smoke.sh" ] || stop "bundle-lacks-the-deploy-helpers"
+          # Pull now, before the revert is armed, so the start never spends the revert window downloading.
+          for REF in "$MIGRATE_REF" "$API_REF" "$WORKER_REF" "$PSQL_IMAGE"; do
+            docker pull --quiet "$REF" </dev/null || stop "image-pull-failed"
+          done
           say "RT_TARGET api=$API_DIGEST worker=$WORKER_DIGEST migrate=$MIGRATE_DIGEST"
           pass fetch
 
@@ -353,8 +376,7 @@ mainSteps:
           READY=no
           DEADLINE=$(( $(date +%s) + READY_TIMEOUT_SECONDS ))
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 --resolve "$ORIGIN_HOST:80:127.0.0.1" \
-              "http://$ORIGIN_HOST/api/v1/health/ready" </dev/null || true)"
+            CODE="$(origin_ready_code)"
             if [ "$CODE" = 200 ]; then READY=yes; break; fi
             sleep 5
           done

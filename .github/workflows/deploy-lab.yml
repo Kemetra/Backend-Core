@@ -72,6 +72,7 @@ jobs:
       worker_digest: ${{ steps.plan.outputs.worker_digest }}
       migrate_digest: ${{ steps.plan.outputs.migrate_digest }}
       rollback_allowed: ${{ steps.plan.outputs.rollback_allowed }}
+      environment_gate: ${{ steps.plan.outputs.environment_gate }}
     steps:
       - name: Guard (main only, validated inputs, live runs name the current release)
         id: guard
@@ -279,6 +280,8 @@ jobs:
       # Only a planned (0-refusal) ledger reaches here; its non-secret plan feeds the live job.
       - name: Export the verified plan for the live job
         id: plan
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           LEDGER="$RUNNER_TEMP/ledger/ledger.json"
@@ -294,6 +297,16 @@ jobs:
           # App-only rollback only when the verifier compared the two releases and found no schema change.
           ROLLBACK="$(jq -r '(.plan.migrations.added != null and .plan.migrations.rollback.allowed == true) | tostring' "$LEDGER")"
           echo "rollback_allowed=$ROLLBACK" >> "$GITHUB_OUTPUT"
+          # The human gate: a live run needs aws-lab read back as present with a required reviewer.
+          # GitHub would create a missing environment unprotected, and "not visible" or "unknown" is
+          # not proof of a reviewer, so anything else refuses the live run here.
+          GATE="$(jq -r 'if .status == "present" and (.reviewers | type) == "number" and .reviewers >= 1 then "reviewed" else "unverified" end' \
+            "$RUNNER_TEMP/evidence/environment.json" 2>/dev/null || echo unverified)"
+          echo "environment_gate=$GATE" >> "$GITHUB_OUTPUT"
+          if [ "$DRY_RUN" = "false" ] && [ "$GATE" != "reviewed" ]; then
+            echo "::error::live run refused: the aws-lab environment was not read back with a required reviewer"
+            exit 1
+          fi
 
       - name: Add the ledger to the run summary
         if: always()
@@ -337,12 +350,14 @@ jobs:
           WORKER_DIGEST: ${{ needs.preflight.outputs.worker_digest }}
           MIGRATE_DIGEST: ${{ needs.preflight.outputs.migrate_digest }}
           ROLLBACK_ALLOWED: ${{ needs.preflight.outputs.rollback_allowed }}
+          ENVIRONMENT_GATE: ${{ needs.preflight.outputs.environment_gate }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$*"; exit 1; }
 
           [ "$RUN_REF" = "refs/heads/main" ] || fail "must be dispatched from refs/heads/main"
           [ "$DRY_RUN" = "false" ] || fail "the live job runs only when dry_run=false"
+          [ "$ENVIRONMENT_GATE" = "reviewed" ] || fail "preflight did not read back aws-lab with a required reviewer"
           [[ "$BACKEND_RELEASE" =~ ^backend-core-[0-9a-f]{12}$ ]] || fail "backend_release must be backend-core-<12 hex>"
           [[ "$CURRENT_RELEASE" =~ ^backend-core-[0-9a-f]{12}$ ]] || fail "a live run needs current_release backend-core-<12 hex>"
           [[ "$JIRA_KEY" =~ ^RT-[1-9][0-9]{0,5}$ ]] || fail "jira_key must be RT-<number>"

@@ -161,7 +161,7 @@ describe("RT-BackendLabDeploy (lab-01)", () => {
       "inventory-effect-integration-catchup.sql",
       '"$DC" up -d </dev/null || stop "compose-up-failed"',
       'running_matches api "$API_REF"',
-      "/api/v1/health/ready",
+      "GATE=G-Ready",
       'deploy/console-smoke.sh" "http://$ORIGIN_HOST"',
       'systemctl stop "$UNIT.timer"',
       'say "RT_DONE release=$RELEASE_TAG"',
@@ -184,6 +184,22 @@ describe("RT-BackendLabDeploy (lab-01)", () => {
     expect(b).toContain('BACKUP_NAME="${SSM_BackupName:-}"');
     expect(b).toContain('[[ "$BACKUP_SHA256" =~ ^[0-9a-f]{64}$ ]] || stop "BackupSha256-missing-or-invalid"');
     expect(b).toMatch(/\[\[ "\$BACKUP_NAME" =~ \^rtlab-\(\[0-9a-f\]\{12\}\)-to-\(\[0-9a-f\]\{12\}\)-/);
+  });
+
+  it("G-Host: the readiness probe must already pass on the current release, and a redirect names the contract", () => {
+    const host = b.slice(b.indexOf("GATE=G-Host"), b.indexOf("pass G-Host"));
+    expect(host).toContain('CODE="$(origin_ready_code)"');
+    expect(host).toContain('3??) stop "origin-port-80-redirects-CADDY_SITE_ADDRESS-must-be-http-scheme"');
+    expect(host).toContain('*) stop "origin-health-ready-not-200-on-the-current-release"');
+    // G-Ready uses the same probe
+    expect(b.slice(b.indexOf("GATE=G-Ready"))).toContain('CODE="$(origin_ready_code)"');
+  });
+
+  it("pulls every image before the revert is armed, so the start spends no revert time downloading", () => {
+    const pull = b.indexOf('docker pull --quiet "$REF" </dev/null || stop "image-pull-failed"');
+    expect(pull).toBeGreaterThan(b.indexOf("GATE=fetch"));
+    expect(pull).toBeLessThan(b.indexOf("systemd-run --unit"));
+    expect(b).toContain('for REF in "$MIGRATE_REF" "$API_REF" "$WORKER_REF" "$PSQL_IMAGE"; do');
   });
 
   it("G-Backup: accepts only a fresh backup of this release pair", () => {
@@ -221,7 +237,19 @@ describe("RT-BackendLabDeploy (lab-01)", () => {
   });
 
   it("never reports success over a revert that fired: window check before start, fired/ran checks at cancel", () => {
-    expect(b).toContain("MAX_SECONDS_BEFORE_START=720");
+    // the start cutoff leaves room for everything after it: up + catch-up, readiness, smoke, margin
+    expect(b).toContain(
+      "MAX_SECONDS_BEFORE_START=$(( REVERT_SECONDS - POST_START_SECONDS - READY_TIMEOUT_SECONDS - SMOKE_SECONDS - CANCEL_MARGIN_SECONDS ))",
+    );
+    const num = (name: string): number => Number(new RegExp(String.raw`\n${name}=(\d+)\n`).exec(b)?.[1]);
+    expect(num("REVERT_SECONDS")).toBe(15 * 60);
+    expect(b).toContain("REVERT_AFTER=15min");
+    // console-smoke: 8 requests of at most SMOKE_MAX_TIME (10 s) each
+    const smokeRequests = [...read("deploy/console-smoke.sh").matchAll(/\$\(get /g)].length;
+    expect(num("SMOKE_SECONDS")).toBeGreaterThanOrEqual(smokeRequests * 10);
+    const cutoff = num("REVERT_SECONDS") - num("POST_START_SECONDS") - num("READY_TIMEOUT_SECONDS") - num("SMOKE_SECONDS") - num("CANCEL_MARGIN_SECONDS");
+    expect(cutoff).toBeGreaterThan(0);
+    expect(num("CANCEL_MARGIN_SECONDS")).toBeGreaterThanOrEqual(60);
     expect(b.indexOf('ARMED_AT="$(date +%s)"')).toBeLessThan(b.indexOf("too-little-revert-window-left-to-start"));
     expect(b.indexOf("too-little-revert-window-left-to-start")).toBeLessThan(b.indexOf('"$DC" up -d </dev/null ||'));
     const cancel = b.slice(b.indexOf("GATE=cancel-revert"), b.indexOf("RT_DONE"));
@@ -244,7 +272,7 @@ describe("RT-BackendLabDeploy (lab-01)", () => {
       catchups[0] ?? -1,
       b.indexOf('"$DC" up -d </dev/null ||'),
       catchups[1] ?? -1,
-      b.indexOf("/api/v1/health/ready"),
+      b.indexOf("GATE=G-Ready"),
       b.indexOf('systemctl stop "$UNIT.timer"'),
     ];
     expect(steps.every((i) => i > -1)).toBe(true);

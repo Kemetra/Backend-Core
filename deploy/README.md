@@ -357,7 +357,9 @@ re-applies an edited one.
 A dispatch with `dry_run: false` and a `current_release` runs the `live` job,
 and only after a preflight with 0 refusals. The job:
 
-1. waits for the `aws-lab` environment's required reviewer;
+1. runs only if the preflight read `aws-lab` back as present with a required
+   reviewer, then waits for that reviewer (a "not visible" or reviewer-less
+   environment refuses the live run in the preflight);
 2. fails closed unless the environment variables `AWS_ROLE_ARN` (an IAM role
    ARN) and `AWS_REGION` are set;
 3. prints the non-secret OIDC claims;
@@ -433,7 +435,10 @@ runs any of it, and none of it is done by merging this workflow:
      - `/root/rt-lab-secrets/grants.env` holds the migration-owner `PG*`
        variables, `PGSSLMODE=require` and `DOMAIN_DB_ROLE`;
      - `docker`, `python3`, `curl` and `systemd-run` are installed;
-     - Caddy serves `lab.kemetralabs.com` on port 80 of the host.
+     - Caddy serves `lab.kemetralabs.com` over plain HTTP on port 80 of the host
+       (`CADDY_SITE_ADDRESS=http://lab.kemetralabs.com`, behind the tunnel). A bare
+       hostname turns on automatic HTTPS and a port-80 redirect; G-Host then stops
+       before anything changes.
    - lab-02:
      - the `rtlab` database;
      - `pg_dump` / `pg_restore`;

@@ -330,7 +330,62 @@ describe("deploy-lab workflow: preflight guard (RT-842)", () => {
     expect(stepIndex("Verify evidence")).toBeLessThan(stepIndex("Export the verified plan"));
     expect(plan.run).toContain('.outcome == "planned" and (.refusals | length) == 0');
     expect(plan.run).toContain(".plan.migrations.added != null and .plan.migrations.rollback.allowed == true");
-    expect(Object.keys(preflight.outputs ?? {}).sort()).toEqual(["api_digest", "migrate_digest", "release_sha", "rollback_allowed", "worker_digest"]);
+    expect(Object.keys(preflight.outputs ?? {}).sort()).toEqual(["api_digest", "environment_gate", "migrate_digest", "release_sha", "rollback_allowed", "worker_digest"]);
+  });
+
+  describe("the aws-lab reviewer gate", () => {
+    let tmp: string;
+    const planEnv = (dryRun: string): Record<string, string> => ({
+      DRY_RUN: dryRun,
+      RUNNER_TEMP: tmp,
+      GITHUB_OUTPUT: join(tmp, "output"),
+    });
+    const writeEvidence = (environment: unknown): void => {
+      mkdirSync(join(tmp, "ledger"), { recursive: true });
+      mkdirSync(join(tmp, "evidence"), { recursive: true });
+      writeFileSync(
+        join(tmp, "ledger", "ledger.json"),
+        JSON.stringify({
+          outcome: "planned",
+          refusals: [],
+          release: { sha: SHA },
+          images: Object.fromEntries(Object.entries(DIGESTS).map(([t, digest]) => [t, { digest }])),
+          plan: { migrations: { added: [], rollback: { allowed: true } } },
+        }),
+      );
+      if (environment !== undefined) writeFileSync(join(tmp, "evidence", "environment.json"), JSON.stringify(environment));
+    };
+    const gateOutput = (): string => /environment_gate=(\w+)/.exec(readFileSync(join(tmp, "output"), "utf8"))?.[1] ?? "";
+    beforeEach(() => {
+      tmp = mkdtempSync(join(tmpdir(), "rt842-plan-"));
+    });
+    afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+    itBash("lets a live run through only when aws-lab was read back with a required reviewer", () => {
+      writeEvidence({ status: "present", reviewers: 1 });
+      expect(runStep(stepNamed("Export the verified plan"), planEnv("false")).status).toBe(0);
+      expect(gateOutput()).toBe("reviewed");
+    });
+
+    itBash.each([
+      ["not visible", { status: "not-visible", reviewers: 0 }],
+      ["unknown", { status: "unknown", reviewers: 0 }],
+      ["present without a reviewer", { status: "present", reviewers: 0 }],
+      ["a non-numeric reviewer count", { status: "present", reviewers: "1" }],
+      ["no environment evidence", undefined],
+    ])("refuses a live run when the environment is %s", (_label, environment) => {
+      writeEvidence(environment);
+      const r = runStep(stepNamed("Export the verified plan"), planEnv("false"));
+      expect(r.status).not.toBe(0);
+      expect(r.output).toContain("live run refused: the aws-lab environment was not read back with a required reviewer");
+      expect(gateOutput()).toBe("unverified");
+    });
+
+    itBash("never blocks a dry run on the environment", () => {
+      writeEvidence({ status: "not-visible", reviewers: 0 });
+      expect(runStep(stepNamed("Export the verified plan"), planEnv("true")).status).toBe(0);
+      expect(gateOutput()).toBe("unverified");
+    });
   });
 });
 
@@ -351,6 +406,7 @@ describe("deploy-lab workflow: live job (RT-842)", () => {
     WORKER_DIGEST: `sha256:${"b".repeat(64)}`,
     MIGRATE_DIGEST: `sha256:${"c".repeat(64)}`,
     ROLLBACK_ALLOWED: "true",
+    ENVIRONMENT_GATE: "reviewed",
     ...over,
   });
 
@@ -393,6 +449,7 @@ describe("deploy-lab workflow: live job (RT-842)", () => {
     ["a plan for another commit", { RELEASE_SHA: "ff9e68331415c29aa21ba3ece6af3e2f62b22646" }, /does not name the release commit/],
     ["a plan without digests", { WORKER_DIGEST: "" }, /lacks a registry digest/],
     ["a plan without the rollback rule", { ROLLBACK_ALLOWED: "" }, /lacks the rollback rule/],
+    ["an unverified aws-lab reviewer gate", { ENVIRONMENT_GATE: "unverified" }, /did not read back aws-lab with a required reviewer/],
   ])("the live guard refuses %s", (_label, over, pattern) => {
     const r = runStep(liveGuard(), guardEnv(over));
     expect(r.status).not.toBe(0);
