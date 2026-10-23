@@ -406,17 +406,20 @@ mainSteps:
           # and stopping it would still "succeed": check the sub-state and the trigger time first.
           [ "$(systemctl show -p SubState --value "$UNIT.timer")" = waiting ] || stop "auto-revert-already-fired"
           [ "$(systemctl show -p LastTriggerUSecMonotonic --value "$UNIT.timer")" = 0 ] || stop "auto-revert-already-fired"
+          # Everything that can fail is checked before the claim, while the revert is still armed.
+          [ ! -e "$RUN_DIR/REVERT-STARTED" ] && [ ! -e "$RUN_DIR/REVERTED" ] && [ ! -e "$RUN_DIR/REVERT-BLOCKED" ] || stop "auto-revert-ran"
+          running_matches api "$API_REF" || stop "running-api-changed-after-readiness"
+          running_matches worker "$WORKER_REF" || stop "running-worker-changed-after-readiness"
           # The decision itself: an atomic mkdir the revert script also makes as its first action.
           # If the revert claimed it first (even one queued a moment ago), this run stops; once this
           # run has claimed it, a revert that still fires exits without touching anything.
           mkdir "$RUN_DIR/outcome" 2>/dev/null || stop "auto-revert-ran"
           echo cancel > "$RUN_DIR/outcome/by"
-          systemctl stop "$UNIT.timer" || stop "auto-revert-not-cancelled"
-          ! systemctl is-active --quiet "$UNIT.timer" || stop "auto-revert-still-active"
-          [ ! -e "$RUN_DIR/REVERT-STARTED" ] && [ ! -e "$RUN_DIR/REVERTED" ] && [ ! -e "$RUN_DIR/REVERT-BLOCKED" ] || stop "auto-revert-ran"
-          # The target must still be what runs.
-          running_matches api "$API_REF" || stop "running-api-changed-after-readiness"
-          running_matches worker "$WORKER_REF" || stop "running-worker-changed-after-readiness"
+          # Only the timer stop follows the claim. If it fails, give the claim back first, so the
+          # still-armed revert can run instead of exiting as a no-op.
+          release_claim() { rm -f "${RUN_DIR:?}/outcome/by"; rmdir "${RUN_DIR:?}/outcome"; }
+          systemctl stop "$UNIT.timer" || { release_claim; stop "auto-revert-not-cancelled"; }
+          ! systemctl is-active --quiet "$UNIT.timer" || { release_claim; stop "auto-revert-still-active"; }
           say "RT_REVERT cancelled unit=$UNIT"
           pass cancel-revert
           say "RT_DONE release=$RELEASE_TAG"

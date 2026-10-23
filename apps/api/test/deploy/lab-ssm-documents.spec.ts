@@ -268,14 +268,29 @@ describe("RT-BackendLabDeploy (lab-01)", () => {
       // a fired one-shot timer stays active (sub-state elapsed): judge by sub-state and trigger time
       '[ "$(systemctl show -p SubState --value "$UNIT.timer")" = waiting ] || stop "auto-revert-already-fired"',
       '[ "$(systemctl show -p LastTriggerUSecMonotonic --value "$UNIT.timer")" = 0 ] || stop "auto-revert-already-fired"',
+      // every check that can fail runs before the claim, while the revert is still armed
+      '[ ! -e "$RUN_DIR/REVERT-STARTED" ] && [ ! -e "$RUN_DIR/REVERTED" ] && [ ! -e "$RUN_DIR/REVERT-BLOCKED" ] || stop "auto-revert-ran"',
+      'running_matches api "$API_REF" || stop "running-api-changed-after-readiness"',
+      'running_matches worker "$WORKER_REF" || stop "running-worker-changed-after-readiness"',
       // the decision is an atomic claim the revert script also makes first, so a revert queued
       // just before the stop can never also run after this run reports success
       'mkdir "$RUN_DIR/outcome" 2>/dev/null || stop "auto-revert-ran"',
-      'systemctl stop "$UNIT.timer"',
-      '[ ! -e "$RUN_DIR/REVERT-STARTED" ] && [ ! -e "$RUN_DIR/REVERTED" ] && [ ! -e "$RUN_DIR/REVERT-BLOCKED" ] || stop "auto-revert-ran"',
-      'running_matches api "$API_REF" || stop "running-api-changed-after-readiness"',
+      'systemctl stop "$UNIT.timer" || { release_claim; stop "auto-revert-not-cancelled"; }',
+      '! systemctl is-active --quiet "$UNIT.timer" || { release_claim; stop "auto-revert-still-active"; }',
       'say "RT_REVERT cancelled',
     ]);
+  });
+
+  it("after the claim, every failure gives the claim back so the armed revert still runs", () => {
+    const cancel = b.slice(b.indexOf("GATE=cancel-revert"), b.indexOf("RT_DONE"));
+    const afterClaim = cancel.slice(cancel.indexOf('mkdir "$RUN_DIR/outcome"'));
+    expect(cancel).toContain('release_claim() { rm -f "${RUN_DIR:?}/outcome/by"; rmdir "${RUN_DIR:?}/outcome"; }');
+    // each stop after the claim is preceded by release_claim (bar the claim's own refusal)
+    const stops = afterClaim.split("\n").filter((l) => l.includes("stop \"") && !l.startsWith("mkdir "));
+    expect(stops.length).toBeGreaterThan(0);
+    for (const line of stops) expect(line).toMatch(/\{ release_claim; stop "[a-z-]+"; \}$/);
+    // no running-image check (which could fail) is left after the claim
+    expect(afterClaim).not.toContain("running_matches");
   });
 
   it("orders migrate, grants, catch-up, up, catch-up, readiness, cancel revert", () => {
