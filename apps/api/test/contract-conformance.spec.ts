@@ -2364,7 +2364,7 @@ describe("Slice 11 — stores (T300)", () => {
 //   GET /api/v1/tenants/:tenant_id    200 → Tenant
 //
 // Wire-shape goal:
-//   - TenantSummary: id/slug/name only — no date fields.
+//   - TenantSummary: id/slug/name/status — no date fields.
 //   - Tenant (allOf TenantSummary): confirm toFullBody() serialises Date
 //     fields to ISO strings before AJV evaluates format: date-time.
 //
@@ -2465,7 +2465,16 @@ describe("Slice 12 — tenants (T300)", () => {
       assertConformsTo(validateTenantSummaryArray, res.body);
     });
 
-    it("summary fields are id/slug/name only; no date fields", async () => {
+    it("TenantSummary requires status with the Tenant enum (RT-843)", () => {
+      const row = { id: TENANTS_TENANT_ID, slug: "acme-corp", name: "Acme Corp" };
+      expect(validateTenantSummaryArray([row])).toBe(false);
+      for (const status of ["active", "suspended", "pending"]) {
+        expect(validateTenantSummaryArray([{ ...row, status }])).toBe(true);
+      }
+      expect(validateTenantSummaryArray([{ ...row, status: "deleted" }])).toBe(false);
+    });
+
+    it("summary fields are id/slug/name/status; no date fields", async () => {
       const res = await tenantsHttp()
         .get("/api/v1/tenants")
         .expect(200);
@@ -2474,6 +2483,7 @@ describe("Slice 12 — tenants (T300)", () => {
       expect(summary.id).toBe(TENANTS_TENANT_ID);
       expect(summary.slug).toBe("acme-corp");
       expect(summary.name).toBe("Acme Corp");
+      expect(summary.status).toBe("active");
       expect(summary).not.toHaveProperty("created_at");
       expect(summary).not.toHaveProperty("updated_at");
       expect(summary).not.toHaveProperty("deleted_at");

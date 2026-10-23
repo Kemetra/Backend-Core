@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Tenants API
-  version: "1.1.0-draft"
+  version: "1.2.0-draft"
   description: >
     Tenant administration. Q1 default A: tenant *creation* is restricted to
     platform admins. Tenant-admins can read their own tenant and manage
@@ -11,6 +11,13 @@ info:
     **1.1.0-draft (RT-620, additive).** Every cookieAuth operation may
     return 429 `rate_limited` (`TooManyRequests`, with `Retry-After`)
     from the console rate limit (RT-574, RT-619). No other wire change.
+
+
+    **1.2.0-draft (RT-843, additive, GATED — owner-approved 2026-10-23).**
+    `TenantSummary` (the `listTenants` row) gains `status`
+    (`active | suspended | pending`, same enum as `Tenant.status`), so the
+    platform tenant directory needs no per-row `readTenant`. Response-only
+    and always emitted by the runtime; no request, path or status-code change.
 servers:
   - url: https://api.example.com
 paths:
@@ -140,10 +147,12 @@ components:
   schemas:
     TenantSummary:
       type: object
+      required: [status]
       properties:
         id: { type: string, format: uuid }
         slug: { type: string }
         name: { type: string }
+        status: { type: string, enum: [active, suspended, pending] }
     Tenant:
       allOf:
         - $ref: "#/components/schemas/TenantSummary"

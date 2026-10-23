@@ -108,6 +108,7 @@ interface TenantSummaryBody {
   id: string;
   slug: string;
   name: string;
+  status: string;
 }
 
 /**
@@ -137,7 +138,7 @@ function toMembershipDetailBody(d: MembershipDetail): MembershipDetailBody {
 }
 
 function toSummaryBody(record: TenantRecord): TenantSummaryBody {
-  return { id: record.id, slug: record.slug, name: record.name };
+  return { id: record.id, slug: record.slug, name: record.name, status: record.status };
 }
 
 function toFullBody(record: TenantRecord): TenantBody {
