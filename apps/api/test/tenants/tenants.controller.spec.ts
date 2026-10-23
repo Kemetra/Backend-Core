@@ -253,7 +253,7 @@ describe("GET /api/v1/tenants", () => {
       .expect(200);
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body).toHaveLength(1);
-    expect(res.body[0]).toMatchObject({ id: ACME_ID, slug: "acme" });
+    expect(res.body[0]).toMatchObject({ id: ACME_ID, slug: "acme", status: "active" });
   });
 
   it("user with no memberships sees empty list", async () => {
@@ -280,6 +280,27 @@ describe("GET /api/v1/tenants", () => {
     expect(ids).toContain(ACME_ID);
     expect(ids).toContain(GLOBEX_ID);
   });
+
+  it.each(["active", "suspended", "pending"] as const)(
+    "platform admin list carries status=%s from tenants.status (RT-843)",
+    async (status) => {
+      if (maybeSkip()) return;
+      const cookie = await signIn(ALICE_EMAIL, ALICE_PASSWORD);
+      await pool!.query("UPDATE tenants SET status = $1 WHERE id = $2", [status, GLOBEX_ID]);
+      try {
+        const res = await http()
+          .get("/api/v1/tenants")
+          .set("Cookie", cookie)
+          .set(SAME_ORIGIN)
+          .expect(200);
+        const row = res.body.find((r: { id: string }) => r.id === GLOBEX_ID);
+        expect(row).toEqual({ id: GLOBEX_ID, slug: "globex", name: expect.any(String), status });
+        for (const r of res.body) expect(["active", "suspended", "pending"]).toContain(r.status);
+      } finally {
+        await pool!.query("UPDATE tenants SET status = 'active' WHERE id = $1", [GLOBEX_ID]);
+      }
+    },
+  );
 });
 
 // ---- POST /tenants ------------------------------------------------------

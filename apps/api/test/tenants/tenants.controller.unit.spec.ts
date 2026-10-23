@@ -236,16 +236,30 @@ function http() {
 // ---------------------------------------------------------------------------
 
 describe("GET /api/v1/tenants", () => {
-  it("happy path: returns 200 with summary array (id, slug, name only)", async () => {
+  it("happy path: returns 200 with summary array (id, slug, name, status)", async () => {
     const res = await http().get("/api/v1/tenants");
     expect(res.status).toBe(200);
     expect(res.body).toEqual([
-      { id: TENANT_ID, slug: "acme-corp", name: "Acme Corp" },
+      { id: TENANT_ID, slug: "acme-corp", name: "Acme Corp", status: "active" },
     ]);
-    // Summary shape must NOT include status, created_at, etc.
-    expect(res.body[0]).not.toHaveProperty("status");
+    // Summary shape must NOT include the full-tenant timestamps.
     expect(res.body[0]).not.toHaveProperty("created_at");
+    expect(res.body[0]).not.toHaveProperty("updated_at");
+    expect(res.body[0]).not.toHaveProperty("deleted_at");
   });
+
+  it.each(["active", "suspended", "pending"] as const)(
+    "surfaces status=%s on every summary row (RT-843)",
+    async (status) => {
+      svc.listResult = [
+        makeTenantRecord({ status }),
+        makeTenantRecord({ id: "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb", status }),
+      ];
+      const res = await http().get("/api/v1/tenants");
+      expect(res.status).toBe(200);
+      expect(res.body.map((r: { status: string }) => r.status)).toEqual([status, status]);
+    },
+  );
 
   it("forwards principal to service.list", async () => {
     await http().get("/api/v1/tenants");
