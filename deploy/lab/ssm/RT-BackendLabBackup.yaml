@@ -1,0 +1,133 @@
+# RT-842 (RT-532 S4, owner decision D-1a): lab-02 pre-deploy backup and
+# restore rehearsal for the GitHub `Deploy lab` workflow (deploy-lab.yml).
+#
+# The OWNER creates this SSM Command document from this file (never CI) and
+# registers lab-02 as a managed node; see deploy/README.md, "Lab deploy
+# workflow". It runs as root on retail-tower-lab-02 and:
+#
+#   1. takes a fresh `pg_dump -Fc` of the lab database as the postgres OS user
+#      (61 of 67 tables use FORCE RLS, so the owner role cannot dump them);
+#   2. writes its SHA-256 next to it;
+#   3. restores it into a scratch database and requires the same number of
+#      tables in every non-system schema, then drops the scratch database;
+#   4. prints only the backup name and checksum.
+#
+# Parameters reach the script only as SSM_<name> environment variables
+# (interpolationType ENV_VAR, SSM Agent 3.3.2746.0 or newer). The script never
+# contains a `{{ }}` placeholder, so no parameter value is ever pasted into
+# shell text; each value is also re-validated before use. An older agent sets
+# no SSM_* variable, and the script stops.
+#
+# Output contract: stdout carries only fixed `RT_*` lines that the workflow
+# parses with strict patterns (the Actions log of this public repo is
+# public). Everything else goes to a root-only log under /var/log/rt-deploy.
+schemaVersion: "2.2"
+description: "RT lab-02: pg_dump -Fc of the lab database with checksum and restore rehearsal (RT-842). Prints only the backup name and checksum."
+parameters:
+  ReleaseTag:
+    type: String
+    description: "Target Backend-Core release, backend-core-<sha12>."
+    allowedPattern: "^backend-core-[0-9a-f]{12}$"
+    interpolationType: ENV_VAR
+  CurrentRelease:
+    type: String
+    description: "Release lab-01 runs now, backend-core-<sha12>."
+    allowedPattern: "^backend-core-[0-9a-f]{12}$"
+    interpolationType: ENV_VAR
+  JiraKey:
+    type: String
+    description: "Jira issue authorizing the run, RT-<number>."
+    allowedPattern: "^RT-[1-9][0-9]{0,5}$"
+    interpolationType: ENV_VAR
+mainSteps:
+  - action: aws:runShellScript
+    name: backupAndRehearseRestore
+    precondition:
+      StringEquals:
+        - platformType
+        - Linux
+    inputs:
+      timeoutSeconds: "900"
+      runCommand:
+        - |
+          set -eu
+          umask 077
+          RT_SCRIPT="$(mktemp /root/.rt-lab-backup.XXXXXX)"
+          cat > "$RT_SCRIPT" <<'RT_BACKUP_SCRIPT'
+          set -euo pipefail
+          export LC_ALL=C
+          umask 077
+
+          # Host contract (verify on lab-02 before the first live run).
+          DB_NAME=rtlab
+          BACKUP_DIR=/var/backups/rt-lab
+          LOG_DIR=/var/log/rt-deploy
+          MIN_FREE_KB=$((2 * 1024 * 1024))
+
+          GATE=inputs
+          mkdir -p "$LOG_DIR"
+          LOG="$LOG_DIR/backup-$(date -u +%Y%m%dT%H%M%SZ).log"
+          # fd 3 keeps the real stdout for RT_* lines; everything else goes to the root-only log.
+          exec 3>&1 >>"$LOG" 2>&1
+
+          say() { printf '%s\n' "$*" >&3; }
+          stop() { echo "stopped at gate $GATE: $*"; say "RT_FAIL gate=$GATE reason=$*"; exit 1; }
+
+          RELEASE_TAG="${SSM_ReleaseTag:-}"
+          CURRENT_RELEASE="${SSM_CurrentRelease:-}"
+          JIRA_KEY="${SSM_JiraKey:-}"
+          [[ "$RELEASE_TAG" =~ ^backend-core-[0-9a-f]{12}$ ]] || stop "ReleaseTag-missing-or-invalid"
+          [[ "$CURRENT_RELEASE" =~ ^backend-core-[0-9a-f]{12}$ ]] || stop "CurrentRelease-missing-or-invalid"
+          [[ "$JIRA_KEY" =~ ^RT-[1-9][0-9]{0,5}$ ]] || stop "JiraKey-missing-or-invalid"
+          echo "backup for $JIRA_KEY: $CURRENT_RELEASE -> $RELEASE_TAG"
+
+          GATE=lock
+          exec 9>/run/rt-lab-backup.lock
+          flock -n 9 || stop "another-backup-is-running"
+
+          GATE=preconditions
+          command -v pg_dump >/dev/null && command -v pg_restore >/dev/null || stop "postgres-client-tools-missing"
+          sudo -u postgres psql -X -Atq -d "$DB_NAME" -c "select 1" </dev/null | grep -qx 1 || stop "database-not-reachable"
+          mkdir -p "$BACKUP_DIR"
+          chmod 0700 "$BACKUP_DIR"
+          FREE_KB="$(df -Pk "$BACKUP_DIR" | awk 'NR == 2 { print $4 }')"
+          [[ "$FREE_KB" =~ ^[0-9]+$ ]] && [ "$FREE_KB" -ge "$MIN_FREE_KB" ] || stop "less-than-2GiB-free"
+          say "RT_GATE backup-preconditions pass"
+
+          GATE=dump
+          STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          NAME="rtlab-${CURRENT_RELEASE#backend-core-}-to-${RELEASE_TAG#backend-core-}-$STAMP.dump"
+          DUMP="$BACKUP_DIR/$NAME"
+          PART="$DUMP.partial"
+          # The postgres user writes into a root-owned 0700 directory through stdout, never a path it owns.
+          sudo -u postgres pg_dump -Fc -d "$DB_NAME" </dev/null > "$PART" || { rm -f "$PART"; stop "pg_dump-failed"; }
+          [ -s "$PART" ] || { rm -f "$PART"; stop "dump-is-empty"; }
+          mv "$PART" "$DUMP"
+          SUM="$(sha256sum "$DUMP" | cut -d' ' -f1)"
+          [[ "$SUM" =~ ^[0-9a-f]{64}$ ]] || stop "checksum-failed"
+          printf '%s  %s\n' "$SUM" "$NAME" > "$DUMP.sha256"
+          (cd "$BACKUP_DIR" && sha256sum --check --strict --quiet "$NAME.sha256") || stop "checksum-does-not-verify"
+          say "RT_GATE backup-dump pass"
+
+          GATE=restore-rehearsal
+          SCRATCH="rtlab_restore_check_$(date -u +%Y%m%d%H%M%S)"
+          drop_scratch() { sudo -u postgres dropdb --if-exists "$SCRATCH" </dev/null || true; }
+          trap drop_scratch EXIT
+          sudo -u postgres createdb "$SCRATCH" </dev/null || stop "scratch-database-not-created"
+          # pg_restore reads the dump on stdin, so the postgres user needs no read access to the backup directory.
+          sudo -u postgres pg_restore --exit-on-error --no-owner --no-acl -d "$SCRATCH" < "$DUMP" || stop "restore-failed"
+          COUNT_SQL="select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')"
+          SRC_TABLES="$(sudo -u postgres psql -X -Atq -d "$DB_NAME" -c "$COUNT_SQL" </dev/null)"
+          RST_TABLES="$(sudo -u postgres psql -X -Atq -d "$SCRATCH" -c "$COUNT_SQL" </dev/null)"
+          [[ "$SRC_TABLES" =~ ^[0-9]+$ ]] && [ "$SRC_TABLES" -gt 0 ] || stop "source-table-count-unreadable"
+          [ "$SRC_TABLES" = "$RST_TABLES" ] || stop "table-count-mismatch"
+          drop_scratch
+          trap - EXIT
+          say "RT_GATE backup-restore-rehearsal pass tables=$SRC_TABLES"
+
+          say "RT_BACKUP name=$NAME sha256=$SUM"
+          RT_BACKUP_SCRIPT
+          RC=0
+          /bin/bash "$RT_SCRIPT" || RC=$?
+          rm -f "$RT_SCRIPT"
+          exit "$RC"

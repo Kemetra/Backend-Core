@@ -298,12 +298,14 @@ the seven domain-grant scripts, `api`/`worker` up, and the catch-up scripts, as
 in [Deploy](#deploy). Drop `--build`
 from those commands, since the images are pulled, not built.
 
-## Lab deploy workflow (RT-703, preflight only)
+## Lab deploy workflow (RT-703 preflight, RT-842 live job)
 
 The manual `Deploy lab` workflow (`.github/workflows/deploy-lab.yml`) checks
 that a published release is safe to deploy to the AWS lab, and writes a planned
-deployment ledger. **It deploys nothing.** It has no AWS, SSH or SSM step,
-uses only the read-only `GITHUB_TOKEN`, and refuses `dry_run: false`.
+deployment ledger. Its `preflight` job runs on every dispatch and **deploys
+nothing**: it has no AWS, SSH or SSM step and uses only the read-only
+`GITHUB_TOKEN`. The `live` job runs only for `dry_run: false`; see
+[Live run](#live-run-rt-842) below.
 
 Run it from `main` with:
 
@@ -311,9 +313,10 @@ Run it from `main` with:
   reachable from `main` is accepted, not only the tip.
 - `jira_key`: the issue that authorizes the run.
 - `target`: `lab-01`.
-- optionally `current_release`: the release the host is believed to run. This
-  is operator-asserted, not host-verified. It is used for the schema and
-  rollback plan.
+- `current_release`: the release the host is believed to run. It is optional
+  for a dry run, where it is operator-asserted, not host-verified. It is used
+  for the schema and rollback plan. A live run requires it, and lab-01 must
+  prove it (G-Host).
 
 `deploy/lab/verify-release.cjs` makes the decision. It refuses, and the run
 fails, if any of these checks fails:
@@ -349,17 +352,113 @@ lacks a migration the host already has, or that edits an applied migration in
 place, is refused: the migrator tracks applied migrations by id only and never
 re-applies an edited one.
 
-A live run is a later, separately approved slice. It needs:
+### Live run (RT-842)
 
-- the owner-provisioned `aws-lab` environment with a required reviewer;
-- an approved GitHub OIDC -> least-privilege IAM role -> SSM transport for
-  `lab-01`;
-- trusted evidence of what the host runs;
-- an independent, restorable backup.
+A dispatch with `dry_run: false` and a `current_release` runs the `live` job,
+and only after a preflight with 0 refusals. The job:
 
-Do not add `environment: aws-lab` to the workflow before that environment
-exists. GitHub creates a missing environment with no protection rules the first
-time a job names it.
+1. runs only if the preflight read `aws-lab` back as present with a required
+   reviewer, then waits for that reviewer (a "not visible" or reviewer-less
+   environment refuses the live run in the preflight);
+2. fails closed unless the environment variables `AWS_ROLE_ARN` (an IAM role
+   ARN) and `AWS_REGION` are set;
+3. prints the non-secret OIDC claims;
+4. assumes the role through GitHub OIDC (no stored AWS keys);
+5. runs two SSM documents: `RT-BackendLabBackup` on lab-02, then
+   `RT-BackendLabDeploy` on lab-01.
+
+The documents are versioned in [`deploy/lab/ssm/`](lab/ssm/). The deploy document
+runs these steps and stops at the first failure:
+
+1. G-Host: the running images and `SENTRY_RELEASE` must be `current_release`'s.
+2. G-Backup: confirm the fresh backup reference from lab-02.
+3. Fetch the bundle and verify it.
+4. Back up `backend.env` and the wrapper.
+5. Arm a 15-minute `systemd-run` auto-revert.
+6. Migrate, then grants, then catch-up.
+7. Start `api` + `worker` by digest, then run the catch-up scripts again
+   (Deploy step 4: what the previous release wrote while it still ran).
+8. `/health/ready` and `console-smoke.sh` on the origin.
+9. Cancel the auto-revert.
+
+G-Host also refuses while any earlier run's `rt-deploy-revert-*` unit is armed,
+or has fired and still shows as elapsed. The owner checks what that revert did,
+from `/var/lib/rt-deploy/<run>/` and `/var/log/rt-deploy/`, and stops the unit
+before re-running.
+
+If the schema changed between the releases, the auto-revert only records
+that an owner restore or forward-fix decision is needed (the recovery rule
+above). The run uploads a `deploy-lab-live-ledger-<run id>` artifact with:
+
+- the prior and target digests;
+- the backup name and checksum;
+- every gate result;
+- the failure boundary.
+
+Record it on the Jira issue.
+
+**Everything below is owner-only.** No agent or CI job creates, changes or
+runs any of it, and none of it is done by merging this workflow:
+
+1. **Create the two documents** from the repository files, with the AWS
+   identity used for the one-time setup (`RT-LabSetup`, never root or the
+   deploy role), in the `AWS_REGION` region:
+
+   ```bash
+   aws ssm create-document --name RT-BackendLabDeploy --document-type Command \
+     --document-format YAML --content file://deploy/lab/ssm/RT-BackendLabDeploy.yaml
+   aws ssm create-document --name RT-BackendLabBackup --document-type Command \
+     --document-format YAML --content file://deploy/lab/ssm/RT-BackendLabBackup.yaml
+   ```
+
+   After a merged change to either file, run `aws ssm update-document ...
+   --document-version '$LATEST'` with the same content, then
+   `update-document-default-version`. The workflow always runs the default
+   version.
+2. **IAM** (RT-532 c12812/c12879): create the OIDC provider and the role
+   `rt-gha-aws-lab-deploy` with its boundary. Then add the D-1a additions to
+   the boundary and the identity policy:
+   - `ssm:SendCommand` on `document/RT-BackendLabBackup`;
+   - the lab-02 managed node (`Host=lab-02` tag).
+
+   The role still never gets `AWS-RunShellScript`, `StartSession` or
+   `CreateDocument` / `UpdateDocument`.
+3. **SSM registration**: register lab-01 and lab-02 as managed nodes tagged
+   `Environment=lab` and `Host=lab-01` or `Host=lab-02`. Use an SSM Agent
+   3.3.2746.0 or newer: the documents read their parameters only through
+   `interpolationType: ENV_VAR`. An older agent makes every run stop at its
+   input check.
+4. **Set the `aws-lab` variables** `AWS_ROLE_ARN` and `AWS_REGION`. They are
+   non-secret; the environment holds no secrets.
+5. **Verify the host contract** (Needs verification; the documents check it
+   and stop on a mismatch):
+   - lab-01:
+     - the `/opt/rt-lab/backend/dc` compose wrapper names the release directory
+       `release-<current_release>`;
+     - that directory holds the release's `release.env`;
+     - `backend.env` has one `SENTRY_RELEASE=<sha12>` line;
+     - `/root/rt-lab-secrets/grants.env` holds the migration-owner `PG*`
+       variables, `PGSSLMODE=require` and `DOMAIN_DB_ROLE`;
+     - `docker`, `python3`, `curl` and `systemd-run` are installed;
+     - Caddy serves `lab.kemetralabs.com` over plain HTTP on port 80 of the host
+       (`CADDY_SITE_ADDRESS=http://lab.kemetralabs.com`, behind the tunnel). A bare
+       hostname turns on automatic HTTPS and a port-80 redirect; G-Host then stops
+       before anything changes.
+   - lab-02:
+     - the `rtlab` database;
+     - `pg_dump` / `pg_restore`;
+     - 2 GiB free under `/var/backups/rt-lab`.
+6. **First live run** (RT-532 S5): a same-release redeploy of the host's
+   current release, after a `dry_run: true` run of the same inputs.
+
+Residual risks:
+
+- An environment-scoped `sub` lets any workflow on `main` that names
+  `aws-lab` assume the role.
+- `main` needs 0 approvals.
+- `aws-lab` has `can_admins_bypass=true` (an owner decision).
+
+The environment reviewer is therefore the human gate.
 
 ## Operations
 

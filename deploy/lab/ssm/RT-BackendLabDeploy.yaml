@@ -1,0 +1,430 @@
+# RT-842 (RT-532 S4): lab-01 deploy of one pinned Backend-Core release for the
+# GitHub `Deploy lab` workflow (deploy-lab.yml), over SSM Run Command.
+#
+# THIS DOCUMENT IS THE SECURITY BOUNDARY. The SSM agent runs it as root, and
+# the deploy role may run nothing else (no AWS shell document, no sessions).
+# The OWNER creates it from this file (never CI); see deploy/README.md, "Lab
+# deploy workflow".
+#
+# Order (RT-532 c12812 section 4), stopping at the first failure:
+#   G-Host     the running api/worker images and SENTRY_RELEASE must be the
+#              CurrentRelease's, else stop before anything changes
+#   G-Backup   confirm the lab-02 backup reference (RT-BackendLabBackup)
+#   fetch      the target release bundle from its GitHub release, checksums
+#              verified, its release.env equal to the digest parameters
+#   back up    backend.env and the compose wrapper
+#   arm        a 15-minute systemd-run auto-revert (the RT-638 pattern)
+#   G-Migrate  migrate (migrate image, migration-owner role), grants
+#              (deploy/apply-domain-grants.sh), catch-up scripts
+#   start      api + worker by digest (only while 3+ minutes of the revert
+#              window remain), check the running images, then the catch-up
+#              scripts again (README Deploy step 4: what the old app wrote)
+#   G-Ready    /health/ready on the origin, then deploy/console-smoke.sh
+#   cancel     the auto-revert, only after readiness passed and only if it
+#              never fired; the target images must still be running
+#
+# No automatic database downgrade. The auto-revert restores the previous
+# backend.env and wrapper (app-only rollback) only when RollbackAllowed=true,
+# which the workflow sets only when the verifier found no migration added,
+# removed or edited between the two releases. Otherwise it only records that
+# an owner restore or forward-fix decision is needed.
+#
+# Parameters reach the script only as SSM_<name> environment variables
+# (interpolationType ENV_VAR, SSM Agent 3.3.2746.0 or newer). The script never
+# contains a `{{ }}` placeholder, so no parameter value is ever pasted into
+# shell text; each value is also re-validated before use. An older agent sets
+# no SSM_* variable, and the script stops.
+#
+# Output contract: stdout carries only fixed `RT_*` lines that the workflow
+# parses with strict patterns (the Actions log of this public repo is
+# public). Command output goes to a root-only log under /var/log/rt-deploy;
+# no environment file or `docker inspect` output is ever printed.
+#
+# Host contract (Needs verification on lab-01 before the first live run, see
+# deploy/README.md): the release directories, compose wrapper, env files and
+# origin hostname below. Every one is checked first; a mismatch stops the run.
+schemaVersion: "2.2"
+description: "RT lab-01: deploy one pinned Backend-Core release by digest with host, backup, migrate and readiness gates and a 15-minute auto-revert (RT-842)."
+parameters:
+  ReleaseTag:
+    type: String
+    description: "Target Backend-Core release, backend-core-<sha12>."
+    allowedPattern: "^backend-core-[0-9a-f]{12}$"
+    interpolationType: ENV_VAR
+  ApiDigest:
+    type: String
+    description: "Registry digest of the target api image, sha256:<64 hex>."
+    allowedPattern: "^sha256:[0-9a-f]{64}$"
+    interpolationType: ENV_VAR
+  WorkerDigest:
+    type: String
+    description: "Registry digest of the target worker image, sha256:<64 hex>."
+    allowedPattern: "^sha256:[0-9a-f]{64}$"
+    interpolationType: ENV_VAR
+  MigrateDigest:
+    type: String
+    description: "Registry digest of the target migrate image, sha256:<64 hex>."
+    allowedPattern: "^sha256:[0-9a-f]{64}$"
+    interpolationType: ENV_VAR
+  CurrentRelease:
+    type: String
+    description: "Release lab-01 must be running now, backend-core-<sha12> (G-Host)."
+    allowedPattern: "^backend-core-[0-9a-f]{12}$"
+    interpolationType: ENV_VAR
+  JiraKey:
+    type: String
+    description: "Jira issue authorizing the run, RT-<number>."
+    allowedPattern: "^RT-[1-9][0-9]{0,5}$"
+    interpolationType: ENV_VAR
+  BackupName:
+    type: String
+    description: "Backup the lab-02 document reported for this run (G-Backup)."
+    allowedPattern: "^rtlab-[0-9a-f]{12}-to-[0-9a-f]{12}-[0-9]{8}T[0-9]{6}Z\\.dump$"
+    interpolationType: ENV_VAR
+  BackupSha256:
+    type: String
+    description: "SHA-256 of that backup, 64 hex."
+    allowedPattern: "^[0-9a-f]{64}$"
+    interpolationType: ENV_VAR
+  RollbackAllowed:
+    type: String
+    description: "true only when the verifier found no schema change between CurrentRelease and ReleaseTag."
+    allowedValues:
+      - "true"
+      - "false"
+    allowedPattern: "^(true|false)$"
+    interpolationType: ENV_VAR
+mainSteps:
+  - action: aws:runShellScript
+    name: deployBackendRelease
+    precondition:
+      StringEquals:
+        - platformType
+        - Linux
+    inputs:
+      timeoutSeconds: "1800"
+      runCommand:
+        - |
+          set -eu
+          umask 077
+          RT_SCRIPT="$(mktemp /root/.rt-lab-deploy.XXXXXX)"
+          cat > "$RT_SCRIPT" <<'RT_DEPLOY_SCRIPT'
+          set -euo pipefail
+          export LC_ALL=C
+          umask 077
+
+          # Host contract (verify on lab-01 before the first live run).
+          BACKEND_DIR=/opt/rt-lab/backend
+          DC="$BACKEND_DIR/dc"
+          BACKEND_ENV="$BACKEND_DIR/backend.env"
+          GRANTS_ENV=/root/rt-lab-secrets/grants.env
+          STATE_ROOT=/var/lib/rt-deploy
+          LOG_DIR=/var/log/rt-deploy
+          ORIGIN_HOST=lab.kemetralabs.com
+          REPO=Kemetra/Backend-Core
+          # psql client for grants and catch-up (lab-01 has no psql); bash is needed by apply-domain-grants.sh.
+          PSQL_IMAGE=postgres:16-bookworm@sha256:d81f7b51697014367236d07ec58b54153fc28f828b72bf247fe5c7487520bcb0
+          REVERT_AFTER=15min
+          REVERT_SECONDS=900
+          BACKUP_MAX_AGE_SECONDS=7200
+          READY_TIMEOUT_SECONDS=180
+          # Everything after the start must fit the revert window: compose up (images are pulled
+          # before the revert is armed) + the second catch-up, readiness, console-smoke (8 requests
+          # of at most 10 s each) and a cancellation margin. Containers start only within the rest.
+          POST_START_SECONDS=120
+          SMOKE_SECONDS=90
+          CANCEL_MARGIN_SECONDS=60
+          MAX_SECONDS_BEFORE_START=$(( REVERT_SECONDS - POST_START_SECONDS - READY_TIMEOUT_SECONDS - SMOKE_SECONDS - CANCEL_MARGIN_SECONDS ))
+          MAX_ASSET_BYTES=$((16 * 1024 * 1024))
+
+          GATE=inputs
+          RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+          mkdir -p "$LOG_DIR" "$STATE_ROOT"
+          LOG="$LOG_DIR/deploy-$RUN_ID.log"
+          # fd 3 keeps the real stdout for RT_* lines; everything else goes to the root-only log.
+          exec 3>&1 >>"$LOG" 2>&1
+
+          say() { printf '%s\n' "$*" >&3; }
+          pass() { say "RT_GATE $1 pass"; }
+          stop() { echo "stopped at gate $GATE: $*"; say "RT_FAIL gate=$GATE reason=$*"; exit 1; }
+
+          RELEASE_TAG="${SSM_ReleaseTag:-}"
+          API_DIGEST="${SSM_ApiDigest:-}"
+          WORKER_DIGEST="${SSM_WorkerDigest:-}"
+          MIGRATE_DIGEST="${SSM_MigrateDigest:-}"
+          CURRENT_RELEASE="${SSM_CurrentRelease:-}"
+          JIRA_KEY="${SSM_JiraKey:-}"
+          BACKUP_NAME="${SSM_BackupName:-}"
+          BACKUP_SHA256="${SSM_BackupSha256:-}"
+          ROLLBACK_ALLOWED="${SSM_RollbackAllowed:-}"
+          TAG_RE='^backend-core-[0-9a-f]{12}$'
+          DIGEST_RE='^sha256:[0-9a-f]{64}$'
+          [[ "$RELEASE_TAG" =~ $TAG_RE ]] || stop "ReleaseTag-missing-or-invalid"
+          [[ "$CURRENT_RELEASE" =~ $TAG_RE ]] || stop "CurrentRelease-missing-or-invalid"
+          [[ "$API_DIGEST" =~ $DIGEST_RE ]] || stop "ApiDigest-missing-or-invalid"
+          [[ "$WORKER_DIGEST" =~ $DIGEST_RE ]] || stop "WorkerDigest-missing-or-invalid"
+          [[ "$MIGRATE_DIGEST" =~ $DIGEST_RE ]] || stop "MigrateDigest-missing-or-invalid"
+          [[ "$JIRA_KEY" =~ ^RT-[1-9][0-9]{0,5}$ ]] || stop "JiraKey-missing-or-invalid"
+          [[ "$BACKUP_NAME" =~ ^rtlab-([0-9a-f]{12})-to-([0-9a-f]{12})-([0-9]{8})T([0-9]{6})Z\.dump$ ]] || stop "BackupName-missing-or-invalid"
+          BK_CUR="${BASH_REMATCH[1]}" BK_TGT="${BASH_REMATCH[2]}" BK_DAY="${BASH_REMATCH[3]}" BK_TIME="${BASH_REMATCH[4]}"
+          [[ "$BACKUP_SHA256" =~ ^[0-9a-f]{64}$ ]] || stop "BackupSha256-missing-or-invalid"
+          [[ "$ROLLBACK_ALLOWED" =~ ^(true|false)$ ]] || stop "RollbackAllowed-missing-or-invalid"
+          TGT12="${RELEASE_TAG#backend-core-}"
+          CUR12="${CURRENT_RELEASE#backend-core-}"
+          API_REF="ghcr.io/kemetra/backend-core-api@$API_DIGEST"
+          WORKER_REF="ghcr.io/kemetra/backend-core-worker@$WORKER_DIGEST"
+          MIGRATE_REF="ghcr.io/kemetra/backend-core-migrate@$MIGRATE_DIGEST"
+          echo "deploy for $JIRA_KEY: $CURRENT_RELEASE -> $RELEASE_TAG (rollback allowed: $ROLLBACK_ALLOWED)"
+
+          GATE=lock
+          exec 9>/run/rt-lab-deploy.lock
+          flock -n 9 || stop "another-deploy-is-running"
+          RUN_DIR="$STATE_ROOT/$RUN_ID"
+          mkdir -m 0700 "$RUN_DIR"
+          WORK="$(mktemp -d)"
+          trap 'rm -rf "$WORK"' EXIT
+
+          # Reads one KEY=value line; refuses a key that is missing or set twice.
+          env_value() {
+            local file="$1" key="$2" count
+            count="$(grep -c "^$key=" "$file" || true)"
+            [ "$count" = 1 ] || return 1
+            grep "^$key=" "$file" | cut -d= -f2-
+          }
+          # The image ID a container runs; only that one field leaves docker inspect.
+          container_image() {
+            docker inspect --type container "$1" </dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin)[0]["Image"])'
+          }
+          image_id() {
+            docker image inspect "$1" </dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin)[0]["Id"])'
+          }
+          # Exactly one running container of a compose service.
+          service_container() {
+            local ids
+            ids="$(docker ps -q --no-trunc --filter "label=com.docker.compose.service=$1" --filter status=running </dev/null)"
+            [ -n "$ids" ] && [ "$(wc -l <<<"$ids")" = 1 ] || return 1
+            printf '%s\n' "$ids"
+          }
+          running_matches() {
+            local cid want have
+            cid="$(service_container "$1")" || return 1
+            have="$(container_image "$cid")" || return 1
+            want="$(image_id "$2")" || return 1
+            [ -n "$want" ] && [ "$have" = "$want" ]
+          }
+          # HTTP status of /health/ready on the origin (Caddy on this host, port 80, as the tunnel reaches it).
+          origin_ready_code() {
+            curl -sS -o /dev/null -w '%{http_code}' --max-time 5 --resolve "$ORIGIN_HOST:80:127.0.0.1" \
+              "http://$ORIGIN_HOST/api/v1/health/ready" </dev/null || true
+          }
+
+          # ---------------------------------------------------------------- G-Host
+          GATE=G-Host
+          [ -x "$DC" ] && [ -f "$BACKEND_ENV" ] && [ -f "$GRANTS_ENV" ] || stop "host-contract-files-missing"
+          command -v docker >/dev/null && command -v python3 >/dev/null && command -v systemd-run >/dev/null && command -v curl >/dev/null || stop "host-contract-tools-missing"
+          CUR_DIR="$BACKEND_DIR/release-$CURRENT_RELEASE"
+          [ -f "$CUR_DIR/release.env" ] || stop "current-release-directory-missing"
+          # Each run arms its own revert unit and the lock covers only this process: an earlier run's
+          # armed (or fired, elapsed) revert would undo this one. The owner reviews and stops it first.
+          ARMED="$(systemctl list-units --all --plain --no-legend --state=active,activating,reloading \
+            'rt-deploy-revert-*' </dev/null)" || stop "revert-unit-query-failed"
+          [ -z "$ARMED" ] || stop "an-earlier-auto-revert-is-armed-or-elapsed"
+          grep -qF "release-$CURRENT_RELEASE" "$DC" || stop "wrapper-does-not-use-the-current-release"
+          SENTRY="$(env_value "$BACKEND_ENV" SENTRY_RELEASE)" || stop "SENTRY_RELEASE-missing-or-duplicated"
+          [ "$SENTRY" = "$CUR12" ] || stop "SENTRY_RELEASE-is-not-the-current-release"
+          PRIOR_API="$(env_value "$CUR_DIR/release.env" DP2_API_IMAGE)" || stop "current-release-env-unreadable"
+          PRIOR_WORKER="$(env_value "$CUR_DIR/release.env" DP2_WORKER_IMAGE)" || stop "current-release-env-unreadable"
+          PRIOR_MIGRATE="$(env_value "$CUR_DIR/release.env" DP2_MIGRATE_IMAGE)" || stop "current-release-env-unreadable"
+          running_matches api "$PRIOR_API" || stop "running-api-is-not-the-current-release"
+          running_matches worker "$PRIOR_WORKER" || stop "running-worker-is-not-the-current-release"
+          # The readiness probe G-Ready uses must already work on the current release, before anything
+          # changes. A redirect means Caddy serves HTTPS here (bare CADDY_SITE_ADDRESS), not the contract.
+          CODE="$(origin_ready_code)"
+          case "$CODE" in
+            200) ;;
+            3??) stop "origin-port-80-redirects-CADDY_SITE_ADDRESS-must-be-http-scheme" ;;
+            *) stop "origin-health-ready-not-200-on-the-current-release" ;;
+          esac
+          say "RT_PRIOR api=${PRIOR_API##*@} worker=${PRIOR_WORKER##*@} migrate=${PRIOR_MIGRATE##*@} sentry_release=$SENTRY"
+          pass G-Host
+
+          # ---------------------------------------------------------------- G-Backup
+          GATE=G-Backup
+          [ "$BK_CUR" = "$CUR12" ] && [ "$BK_TGT" = "$TGT12" ] || stop "backup-is-for-another-release-pair"
+          BK_EPOCH="$(date -u -d "${BK_DAY:0:4}-${BK_DAY:4:2}-${BK_DAY:6:2}T${BK_TIME:0:2}:${BK_TIME:2:2}:${BK_TIME:4:2}Z" +%s)" || stop "backup-timestamp-unreadable"
+          AGE=$(( $(date -u +%s) - BK_EPOCH ))
+          [ "$AGE" -ge 0 ] && [ "$AGE" -le "$BACKUP_MAX_AGE_SECONDS" ] || stop "backup-is-not-from-this-run"
+          printf 'backup %s sha256 %s\n' "$BACKUP_NAME" "$BACKUP_SHA256" > "$RUN_DIR/backup-reference"
+          pass G-Backup
+
+          # ---------------------------------------------------------------- fetch
+          GATE=fetch
+          BUNDLE="backend-core-release-$TGT12"
+          TGT_DIR="$BACKEND_DIR/release-$RELEASE_TAG"
+          if [ ! -d "$TGT_DIR" ]; then
+            BASE="https://github.com/$REPO/releases/download/$RELEASE_TAG"
+            for ASSET in "$BUNDLE.tar.gz" release-manifest.json SHA256SUMS; do
+              curl -fsSL --proto '=https' --tlsv1.2 --max-time 120 --max-filesize "$MAX_ASSET_BYTES" \
+                -o "$WORK/$ASSET" "$BASE/$ASSET" </dev/null || stop "release-asset-download-failed"
+            done
+            [ "$(awk 'END { print NR }' "$WORK/SHA256SUMS")" = 2 ] || stop "release-SHA256SUMS-must-list-two-assets"
+            (cd "$WORK" && sha256sum --check --strict SHA256SUMS) || stop "release-assets-do-not-match-SHA256SUMS"
+            LISTED="$(tar -tvzf "$WORK/$BUNDLE.tar.gz" --numeric-owner)" || stop "bundle-unreadable"
+            [[ "$(cut -c1 <<<"$LISTED" | sort -u | tr -d '\n')" =~ ^[-d]+$ ]] || stop "bundle-holds-a-non-regular-entry"
+            while IFS= read -r ENTRY; do
+              case "$ENTRY" in "$BUNDLE"/*) ;; *) stop "bundle-entry-outside-its-directory" ;; esac
+              case "$ENTRY" in /* | *..* | *\\*) stop "unsafe-bundle-entry-path" ;; *) ;; esac
+            done < <(tar -tzf "$WORK/$BUNDLE.tar.gz")
+            # The bundle holds no secrets; containers that bind-mount release files (Caddyfile) need them readable.
+            (umask 022 && mkdir "$WORK/extract" \
+              && tar -xzf "$WORK/$BUNDLE.tar.gz" -C "$WORK/extract" --strip-components=1 --no-same-owner --no-same-permissions)
+            cmp -s "$WORK/release-manifest.json" "$WORK/extract/release-manifest.json" || stop "bundle-manifest-differs-from-the-release-asset"
+            mv "$WORK/extract" "$TGT_DIR"
+          fi
+          (cd "$TGT_DIR" && sha256sum --check --strict --quiet SHA256SUMS) || stop "bundle-files-do-not-match-their-SHA256SUMS"
+          [ "$(env_value "$TGT_DIR/release.env" DP2_API_IMAGE)" = "$API_REF" ] || stop "release-env-api-is-not-ApiDigest"
+          [ "$(env_value "$TGT_DIR/release.env" DP2_WORKER_IMAGE)" = "$WORKER_REF" ] || stop "release-env-worker-is-not-WorkerDigest"
+          [ "$(env_value "$TGT_DIR/release.env" DP2_MIGRATE_IMAGE)" = "$MIGRATE_REF" ] || stop "release-env-migrate-is-not-MigrateDigest"
+          [ -f "$TGT_DIR/deploy/apply-domain-grants.sh" ] && [ -f "$TGT_DIR/deploy/console-smoke.sh" ] || stop "bundle-lacks-the-deploy-helpers"
+          # Pull now, before the revert is armed, so the start never spends the revert window downloading.
+          for REF in "$MIGRATE_REF" "$API_REF" "$WORKER_REF" "$PSQL_IMAGE"; do
+            docker pull --quiet "$REF" </dev/null || stop "image-pull-failed"
+          done
+          say "RT_TARGET api=$API_DIGEST worker=$WORKER_DIGEST migrate=$MIGRATE_DIGEST"
+          pass fetch
+
+          # ---------------------------------------------------------------- back up
+          GATE=backup-config
+          cp -p "$BACKEND_ENV" "$RUN_DIR/backend.env"
+          cp -p "$DC" "$RUN_DIR/dc"
+          cp -p "$BACKEND_ENV" "$BACKEND_ENV.bak-pre-$TGT12-$RUN_ID"
+          cp -p "$DC" "$DC.bak-pre-$TGT12-$RUN_ID"
+          cmp -s "$BACKEND_ENV" "$RUN_DIR/backend.env" && cmp -s "$DC" "$RUN_DIR/dc" || stop "config-backup-does-not-verify"
+          # The next wrapper and env differ only in the release directory, SENTRY_RELEASE and any image keys.
+          sed "s|release-$CURRENT_RELEASE|release-$RELEASE_TAG|g" "$DC" > "$RUN_DIR/dc.next"
+          grep -qF "release-$RELEASE_TAG" "$RUN_DIR/dc.next" || stop "next-wrapper-not-built"
+          cp -p "$BACKEND_ENV" "$RUN_DIR/backend.env.next"
+          sed -i "s|^SENTRY_RELEASE=.*|SENTRY_RELEASE=$TGT12|" "$RUN_DIR/backend.env.next"
+          for PAIR in "DP2_API_IMAGE=$API_REF" "DP2_WORKER_IMAGE=$WORKER_REF" "DP2_MIGRATE_IMAGE=$MIGRATE_REF"; do
+            KEY="${PAIR%%=*}"
+            case "$(grep -c "^$KEY=" "$RUN_DIR/backend.env.next" || true)" in
+              0) ;;
+              1) sed -i "s|^$KEY=.*|$PAIR|" "$RUN_DIR/backend.env.next" ;;
+              *) stop "backend-env-sets-an-image-key-twice" ;;
+            esac
+          done
+          chmod --reference="$DC" "$RUN_DIR/dc.next"
+          pass backup-config
+
+          # ---------------------------------------------------------------- arm the auto-revert
+          GATE=arm-revert
+          UNIT="rt-deploy-revert-$RUN_ID"
+          if [ "$ROLLBACK_ALLOWED" = true ]; then
+            cat > "$RUN_DIR/revert.sh" <<REVERT
+          #!/bin/bash
+          # RT-842 auto-revert (app-only): restore the pre-deploy wrapper and env, restart on them.
+          set -euo pipefail
+          # Atomic claim shared with the deploy's cancel step: whoever creates it first decides.
+          mkdir "$RUN_DIR/outcome" 2>/dev/null || exit 0
+          echo revert > "$RUN_DIR/outcome/by"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUN_DIR/REVERT-STARTED"
+          exec >>"$LOG_DIR/revert-$RUN_ID.log" 2>&1
+          cp -p "$RUN_DIR/dc" "$DC"
+          cp -p "$RUN_DIR/backend.env" "$BACKEND_ENV"
+          "$DC" up -d </dev/null
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUN_DIR/REVERTED"
+          REVERT
+          else
+            cat > "$RUN_DIR/revert.sh" <<REVERT
+          #!/bin/bash
+          # RT-842: the schema changed between the releases, so no app-only revert and no
+          # automatic database downgrade. Record that an owner restore or forward-fix decision is needed.
+          set -euo pipefail
+          mkdir "$RUN_DIR/outcome" 2>/dev/null || exit 0
+          echo revert > "$RUN_DIR/outcome/by"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUN_DIR/REVERT-STARTED"
+          echo "schema changed: owner restore or forward-fix decision needed (backup $BACKUP_NAME)" > "$RUN_DIR/REVERT-BLOCKED"
+          REVERT
+          fi
+          chmod 0700 "$RUN_DIR/revert.sh"
+          systemd-run --unit="$UNIT" --on-active="$REVERT_AFTER" --timer-property=AccuracySec=1s /bin/bash "$RUN_DIR/revert.sh" || stop "auto-revert-not-armed"
+          systemctl is-active --quiet "$UNIT.timer" || stop "auto-revert-timer-not-active"
+          ARMED_AT="$(date +%s)"
+          say "RT_REVERT armed unit=$UNIT after=$REVERT_AFTER app_only=$ROLLBACK_ALLOWED"
+          pass arm-revert
+
+          # ---------------------------------------------------------------- G-Migrate
+          GATE=G-Migrate
+          mv "$RUN_DIR/dc.next" "$DC.next" && mv "$DC.next" "$DC"
+          cp -p "$RUN_DIR/backend.env.next" "$BACKEND_ENV.next" && mv "$BACKEND_ENV.next" "$BACKEND_ENV"
+          "$DC" run --rm migrate </dev/null || stop "migrate-failed"
+          pass migrate
+          # Grants and catch-up run in the pinned psql client with the migration-owner PG* variables
+          # from the root-only env file (never a URL on a command line).
+          psql_client() {
+            docker run --rm --network host --env-file "$GRANTS_ENV" -v "$TGT_DIR:/release:ro" -w /release \
+              "$PSQL_IMAGE" "$@" </dev/null
+          }
+          psql_client bash deploy/apply-domain-grants.sh || stop "grants-failed"
+          pass grants
+          psql_client sh -c 'psql -X -v ON_ERROR_STOP=1 -f docs/operations/sql/erpnext-posting-resolution-catchup.sql &&
+            psql -X -v ON_ERROR_STOP=1 -f docs/operations/sql/inventory-effect-integration-catchup.sql' || stop "catch-up-failed"
+          pass catch-up
+
+          # ---------------------------------------------------------------- start api + worker
+          GATE=start
+          [ $(( $(date +%s) - ARMED_AT )) -le "$MAX_SECONDS_BEFORE_START" ] || stop "too-little-revert-window-left-to-start"
+          "$DC" up -d </dev/null || stop "compose-up-failed"
+          running_matches api "$API_REF" || stop "running-api-is-not-ApiDigest"
+          running_matches worker "$WORKER_REF" || stop "running-worker-is-not-WorkerDigest"
+          pass start
+          # README Deploy step 4: freeze what the previous release wrote while it still ran (idempotent).
+          psql_client sh -c 'psql -X -v ON_ERROR_STOP=1 -f docs/operations/sql/erpnext-posting-resolution-catchup.sql &&
+            psql -X -v ON_ERROR_STOP=1 -f docs/operations/sql/inventory-effect-integration-catchup.sql' || stop "post-start-catch-up-failed"
+          pass post-start-catch-up
+
+          # ---------------------------------------------------------------- G-Ready
+          GATE=G-Ready
+          READY=no
+          DEADLINE=$(( $(date +%s) + READY_TIMEOUT_SECONDS ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            CODE="$(origin_ready_code)"
+            if [ "$CODE" = 200 ]; then READY=yes; break; fi
+            sleep 5
+          done
+          [ "$READY" = yes ] || stop "health-ready-not-200-on-the-origin"
+          pass health-ready
+          # console-smoke takes only a base URL; a private curlrc pins the origin hostname to this host.
+          mkdir "$WORK/curl"
+          printf 'resolve = %s:80:127.0.0.1\n' "$ORIGIN_HOST" > "$WORK/curl/.curlrc"
+          CURL_HOME="$WORK/curl" bash "$TGT_DIR/deploy/console-smoke.sh" "http://$ORIGIN_HOST" </dev/null || stop "console-smoke-failed"
+          pass console-smoke
+
+          # ---------------------------------------------------------------- cancel the auto-revert
+          GATE=cancel-revert
+          # A fired one-shot timer stays ActiveState=active (sub-state elapsed, RemainAfterElapse=yes),
+          # and stopping it would still "succeed": check the sub-state and the trigger time first.
+          [ "$(systemctl show -p SubState --value "$UNIT.timer")" = waiting ] || stop "auto-revert-already-fired"
+          [ "$(systemctl show -p LastTriggerUSecMonotonic --value "$UNIT.timer")" = 0 ] || stop "auto-revert-already-fired"
+          # Everything that can fail is checked before the claim, while the revert is still armed.
+          [ ! -e "$RUN_DIR/REVERT-STARTED" ] && [ ! -e "$RUN_DIR/REVERTED" ] && [ ! -e "$RUN_DIR/REVERT-BLOCKED" ] || stop "auto-revert-ran"
+          running_matches api "$API_REF" || stop "running-api-changed-after-readiness"
+          running_matches worker "$WORKER_REF" || stop "running-worker-changed-after-readiness"
+          # The decision itself: an atomic mkdir the revert script also makes as its first action.
+          # If the revert claimed it first (even one queued a moment ago), this run stops; once this
+          # run has claimed it, a revert that still fires exits without touching anything.
+          mkdir "$RUN_DIR/outcome" 2>/dev/null || stop "auto-revert-ran"
+          echo cancel > "$RUN_DIR/outcome/by"
+          # Only the timer stop follows the claim. If it fails, give the claim back first, so the
+          # still-armed revert can run instead of exiting as a no-op.
+          release_claim() { rm -f "${RUN_DIR:?}/outcome/by"; rmdir "${RUN_DIR:?}/outcome"; }
+          systemctl stop "$UNIT.timer" || { release_claim; stop "auto-revert-not-cancelled"; }
+          ! systemctl is-active --quiet "$UNIT.timer" || { release_claim; stop "auto-revert-still-active"; }
+          say "RT_REVERT cancelled unit=$UNIT"
+          pass cancel-revert
+          say "RT_DONE release=$RELEASE_TAG"
+          RT_DEPLOY_SCRIPT
+          RC=0
+          /bin/bash "$RT_SCRIPT" || RC=$?
+          rm -f "$RT_SCRIPT"
+          exit "$RC"

@@ -1,16 +1,18 @@
-# RT-703: manual, approval-gated AWS lab deploy for Backend-Core, slice 1.
+# RT-703 + RT-842: manual, approval-gated AWS lab deploy for Backend-Core.
 #
-# THIS SLICE IS A PREFLIGHT / DRY RUN ONLY. It verifies an already published,
-# immutable Backend-Core release (see release-images.yml) and writes a planned
-# deployment ledger as a workflow artifact. It deploys nothing: no AWS, no SSH,
-# no SSM, no host access, no secrets beyond the read-only GITHUB_TOKEN.
+# preflight (every run): verifies an already published, immutable Backend-Core
+# release (see release-images.yml) and writes a planned deployment ledger as a
+# workflow artifact. It deploys nothing: no AWS, no SSH, no SSM, no host
+# access, no secrets beyond the read-only GITHUB_TOKEN, no environment.
 #
-# No job references a GitHub Environment on purpose. GitHub creates a missing
-# environment, with no protection rules, the first time a job names it, which
-# would silently create an unprotected `aws-lab` gate. A live path needs the
-# owner-provisioned `aws-lab` environment with a required reviewer and an
-# approved OIDC -> IAM role -> SSM transport first (separate owner gates), so
-# `dry_run: false` is refused by the guard below.
+# live (dry_run=false only, RT-532 S4): after a preflight with 0 refusals, the
+# `aws-lab` environment's required reviewer approves the run, the job assumes
+# the deploy role through GitHub OIDC (no stored AWS keys) and runs exactly two
+# owner-created SSM Command documents: RT-BackendLabBackup on lab-02, then
+# RT-BackendLabDeploy on lab-01 (deploy/lab/ssm/). No AWS-RunShellScript, no
+# StartSession, no SSH. It fails closed while the environment variables
+# AWS_ROLE_ARN / AWS_REGION are unset, so it does nothing until the owner has
+# provisioned the OIDC provider, the role and the SSM registrations (S0/S2/S3).
 #
 # Fails closed: any guard or evidence that cannot be evaluated is a refusal.
 name: Deploy lab
@@ -34,12 +36,12 @@ name: Deploy lab
           - lab-01
         default: lab-01
       current_release:
-        description: Optional release tag the host is believed to run (operator-asserted, used for the migration/rollback plan)
+        description: Release tag the host runs (required for a live run, where lab-01 must prove it; else operator-asserted)
         required: false
         type: string
         default: ""
       dry_run:
-        description: Preflight only. Must stay true; live deploy is not enabled in this slice
+        description: Preflight only (default). false runs the live deploy after preflight, with aws-lab approval
         required: true
         type: boolean
         default: true
@@ -63,8 +65,16 @@ jobs:
       packages: read # GHCR login for attestation verification
       attestations: read # gh attestation verify
       actions: read # read (never create) the aws-lab environment
+    # The verified plan, for the live job only (non-secret digests and the rollback rule).
+    outputs:
+      release_sha: ${{ steps.plan.outputs.release_sha }}
+      api_digest: ${{ steps.plan.outputs.api_digest }}
+      worker_digest: ${{ steps.plan.outputs.worker_digest }}
+      migrate_digest: ${{ steps.plan.outputs.migrate_digest }}
+      rollback_allowed: ${{ steps.plan.outputs.rollback_allowed }}
+      environment_gate: ${{ steps.plan.outputs.environment_gate }}
     steps:
-      - name: Guard (main only, validated inputs, dry run only)
+      - name: Guard (main only, validated inputs, live runs name the current release)
         id: guard
         env:
           RUN_REF: ${{ github.ref }}
@@ -84,7 +94,11 @@ jobs:
           if [ -n "$CURRENT_RELEASE" ]; then
             [[ "$CURRENT_RELEASE" =~ ^backend-core-[0-9a-f]{12}$ ]] || fail "current_release must be empty or backend-core-<12 hex>"
           fi
-          [ "$DRY_RUN" = "true" ] || fail "live deploy not enabled: RT-703 slice 1 is dry run only; a live run needs the aws-lab environment, a required reviewer and an approved transport (separate owner gate)"
+          case "$DRY_RUN" in true | false) ;; *) fail "dry_run must be true or false" ;; esac
+          # G-Prov: a live run plans the schema and rollback against the release lab-01 must prove it runs.
+          if [ "$DRY_RUN" = "false" ] && [ -z "$CURRENT_RELEASE" ]; then
+            fail "a live run (dry_run=false) needs current_release: the release lab-01 runs now"
+          fi
 
       # No `ref:` on purpose: the verifier runs from the dispatched main commit,
       # never from the release under test. Full history and tags so `git ls-tree`
@@ -245,6 +259,7 @@ jobs:
       # Runs even when evidence collection stopped early, so every refusal ends
       # up in the ledger; never after a failed guard, checkout or logout.
       - name: Verify evidence and write the planned ledger (no deploy)
+        id: verify
         if: ${{ !cancelled() && steps.guard.outcome == 'success' && steps.checkout.outcome == 'success' && steps.logout.outcome == 'success' }}
         env:
           BACKEND_RELEASE: ${{ inputs.backend_release }}
@@ -262,6 +277,37 @@ jobs:
             --actor "$ACTOR" --run-url "$RUN_URL" \
             --mode dry-run
 
+      # Only a planned (0-refusal) ledger reaches here; its non-secret plan feeds the live job.
+      - name: Export the verified plan for the live job
+        id: plan
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          LEDGER="$RUNNER_TEMP/ledger/ledger.json"
+          jq -e '.outcome == "planned" and (.refusals | length) == 0' "$LEDGER" > /dev/null || { echo "::error::ledger is not a planned, 0-refusal ledger"; exit 1; }
+          SHA="$(jq -r '.release.sha' "$LEDGER")"
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::ledger release SHA is not 40 hex"; exit 1; }
+          echo "release_sha=$SHA" >> "$GITHUB_OUTPUT"
+          for TARGET in api worker migrate; do
+            DIGEST="$(jq -r --arg t "$TARGET" '.images[$t].digest // ""' "$LEDGER")"
+            [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::ledger has no $TARGET digest"; exit 1; }
+            echo "${TARGET}_digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          done
+          # App-only rollback only when the verifier compared the two releases and found no schema change.
+          ROLLBACK="$(jq -r '(.plan.migrations.added != null and .plan.migrations.rollback.allowed == true) | tostring' "$LEDGER")"
+          echo "rollback_allowed=$ROLLBACK" >> "$GITHUB_OUTPUT"
+          # The human gate: a live run needs aws-lab read back as present with a required reviewer.
+          # GitHub would create a missing environment unprotected, and "not visible" or "unknown" is
+          # not proof of a reviewer, so anything else refuses the live run here.
+          GATE="$(jq -r 'if .status == "present" and (.reviewers | type) == "number" and .reviewers >= 1 then "reviewed" else "unverified" end' \
+            "$RUNNER_TEMP/evidence/environment.json" 2>/dev/null || echo unverified)"
+          echo "environment_gate=$GATE" >> "$GITHUB_OUTPUT"
+          if [ "$DRY_RUN" = "false" ] && [ "$GATE" != "reviewed" ]; then
+            echo "::error::live run refused: the aws-lab environment was not read back with a required reviewer"
+            exit 1
+          fi
+
       - name: Add the ledger to the run summary
         if: always()
         run: |
@@ -277,3 +323,246 @@ jobs:
           path: ${{ runner.temp }}/ledger/
           if-no-files-found: warn
           retention-days: 30
+
+  live:
+    name: live deploy (aws-lab, OIDC, SSM backup + deploy)
+    # Only after a preflight with 0 refusals, and never for a dry run: a dry run
+    # never reaches the environment, so it never asks for an approval.
+    needs: preflight
+    if: ${{ inputs.dry_run == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: aws-lab
+    permissions:
+      contents: read # checkout of main for the claim printer
+      id-token: write # the OIDC token for the deploy role; nothing else is granted
+    steps:
+      - name: Guard (main only, live run, verified plan)
+        env:
+          RUN_REF: ${{ github.ref }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          BACKEND_RELEASE: ${{ inputs.backend_release }}
+          CURRENT_RELEASE: ${{ inputs.current_release }}
+          JIRA_KEY: ${{ inputs.jira_key }}
+          TARGET: ${{ inputs.target }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+          API_DIGEST: ${{ needs.preflight.outputs.api_digest }}
+          WORKER_DIGEST: ${{ needs.preflight.outputs.worker_digest }}
+          MIGRATE_DIGEST: ${{ needs.preflight.outputs.migrate_digest }}
+          ROLLBACK_ALLOWED: ${{ needs.preflight.outputs.rollback_allowed }}
+          ENVIRONMENT_GATE: ${{ needs.preflight.outputs.environment_gate }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          [ "$RUN_REF" = "refs/heads/main" ] || fail "must be dispatched from refs/heads/main"
+          [ "$DRY_RUN" = "false" ] || fail "the live job runs only when dry_run=false"
+          [ "$ENVIRONMENT_GATE" = "reviewed" ] || fail "preflight did not read back aws-lab with a required reviewer"
+          [[ "$BACKEND_RELEASE" =~ ^backend-core-[0-9a-f]{12}$ ]] || fail "backend_release must be backend-core-<12 hex>"
+          [[ "$CURRENT_RELEASE" =~ ^backend-core-[0-9a-f]{12}$ ]] || fail "a live run needs current_release backend-core-<12 hex>"
+          [[ "$JIRA_KEY" =~ ^RT-[1-9][0-9]{0,5}$ ]] || fail "jira_key must be RT-<number>"
+          [ "$TARGET" = "lab-01" ] || fail "target must be lab-01"
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] && [ "${RELEASE_SHA:0:12}" = "${BACKEND_RELEASE#backend-core-}" ] \
+            || fail "preflight plan does not name the release commit"
+          for DIGEST in "$API_DIGEST" "$WORKER_DIGEST" "$MIGRATE_DIGEST"; do
+            [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "preflight plan lacks a registry digest"
+          done
+          [[ "$ROLLBACK_ALLOWED" =~ ^(true|false)$ ]] || fail "preflight plan lacks the rollback rule"
+
+      # Fails closed until the owner sets both non-secret variables on the aws-lab
+      # environment (RT-532 S2). Runs before any token is requested.
+      - name: Check the deploy variables (fail closed when unset)
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          [ -n "${AWS_ROLE_ARN:-}" ] || fail "AWS_ROLE_ARN is not set on the aws-lab environment: the live deploy stays off until the owner provisions the OIDC role (RT-532 S2)"
+          [ -n "${AWS_REGION:-}" ] || fail "AWS_REGION is not set on the aws-lab environment: the live deploy stays off until the owner sets it (RT-532 S2)"
+          [[ "$AWS_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,128}$ ]] \
+            || fail "AWS_ROLE_ARN must be an IAM role ARN (never root, a user or an access key)"
+          [[ "$AWS_REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]] || fail "AWS_REGION must be a region name such as us-east-1"
+
+      # No `ref:` on purpose: the claim printer runs from the dispatched main commit.
+      - name: Checkout main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      # RT-532 c12879: print the non-secret trust-policy claims before the first
+      # assume, so a deny is diagnosed from claims, not guessed. Informational:
+      # AWS STS decides; the token itself is masked and never printed.
+      - name: Print the OIDC claims (non-secret, informational)
+        env:
+          JIRA_KEY: ${{ inputs.jira_key }}
+        run: |
+          set -euo pipefail
+          [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] \
+            || { echo "::error::no OIDC request variables: the job needs id-token: write"; exit 1; }
+          echo "::add-mask::$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          RESPONSE="$(curl --silent --show-error --fail --max-time 20 \
+            --header "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com")" || { echo "::error::the OIDC token request failed"; exit 1; }
+          TOKEN="$(jq -er .value <<<"$RESPONSE" 2>/dev/null)" || { echo "::error::the OIDC response held no token"; exit 1; }
+          echo "::add-mask::$TOKEN"
+          printf '%s' "$TOKEN" | node deploy/lab/oidc-claims-check.cjs \
+            --jira-key "$JIRA_KEY" --workflow-file deploy-lab.yml --summary "$GITHUB_STEP_SUMMARY" \
+            || echo "::warning::a claim differs from the RT-532 trust design; see the step summary (AWS STS still decides)"
+
+      - name: Assume the deploy role (GitHub OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: rt-deploy-lab-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      # Exactly two document runs: the lab-02 backup, then the lab-01 deploy. The
+      # documents print only fixed RT_* lines; only lines matching the strict
+      # pattern below ever reach this public log or the ledger.
+      - name: Run the SSM gates (backup on lab-02, then deploy on lab-01)
+        id: ssm
+        env:
+          BACKEND_RELEASE: ${{ inputs.backend_release }}
+          CURRENT_RELEASE: ${{ inputs.current_release }}
+          JIRA_KEY: ${{ inputs.jira_key }}
+          API_DIGEST: ${{ needs.preflight.outputs.api_digest }}
+          WORKER_DIGEST: ${{ needs.preflight.outputs.worker_digest }}
+          MIGRATE_DIGEST: ${{ needs.preflight.outputs.migrate_digest }}
+          ROLLBACK_ALLOWED: ${{ needs.preflight.outputs.rollback_allowed }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          LIVE="$RUNNER_TEMP/live"
+          mkdir -p "$LIVE"
+          fail() { echo "::error::$*"; echo "$*" > "$LIVE/failure.txt"; exit 1; }
+          RESULT_RE='^RT_(GATE|FAIL|PRIOR|TARGET|BACKUP|REVERT|DONE)( [A-Za-z0-9=:._/-]+)*$'
+
+          # One Online managed node per lab host, found by its owner-set tags.
+          node_for() {
+            local ids
+            ids="$(aws ssm describe-instance-information \
+              --filters "Key=tag:Environment,Values=lab" "Key=tag:Host,Values=$1" "Key=PingStatus,Values=Online" \
+              --query 'InstanceInformationList[].InstanceId' --output text)" || return 1
+            [[ "$ids" =~ ^mi-[0-9a-f]{17}$ ]] || return 1
+            printf '%s' "$ids"
+          }
+
+          # run_document <label> <node> <document> <params file> <deadline seconds>
+          run_document() {
+            local label="$1" node="$2" doc="$3" params="$4" limit="$5" cmd status deadline
+            cmd="$(aws ssm send-command --instance-ids "$node" --document-name "$doc" --document-version '$DEFAULT' \
+              --parameters "file://$params" --timeout-seconds 600 --comment "deploy-lab run $RUN_ID $JIRA_KEY" \
+              --query Command.CommandId --output text)" || fail "$label: send-command was refused"
+            [[ "$cmd" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail "$label: no command ID"
+            echo "$label: command $cmd on $node"
+            status=Pending
+            deadline=$(( $(date +%s) + limit ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              sleep 15
+              status="$(aws ssm get-command-invocation --command-id "$cmd" --instance-id "$node" \
+                --query Status --output text 2>/dev/null || echo Pending)"
+              case "$status" in Success | Failed | Cancelled | TimedOut | Undeliverable | Terminated) break ;; *) ;; esac
+            done
+            echo "$status" > "$LIVE/$label.status"
+            # The raw output never reaches the log: only strict RT_* lines are kept.
+            aws ssm get-command-invocation --command-id "$cmd" --instance-id "$node" \
+              --query StandardOutputContent --output text 2>/dev/null \
+              | grep -E "$RESULT_RE" > "$LIVE/$label.lines" || true
+            cat "$LIVE/$label.lines"
+            [ "$status" = Success ] || fail "$label: document ended $status"
+          }
+
+          LAB01="$(node_for lab-01)" || fail "no single Online SSM node tagged Environment=lab, Host=lab-01"
+          LAB02="$(node_for lab-02)" || fail "no single Online SSM node tagged Environment=lab, Host=lab-02"
+
+          jq -n --arg t "$BACKEND_RELEASE" --arg c "$CURRENT_RELEASE" --arg j "$JIRA_KEY" \
+            '{ReleaseTag: [$t], CurrentRelease: [$c], JiraKey: [$j]}' > "$LIVE/backup-params.json"
+          run_document backup "$LAB02" RT-BackendLabBackup "$LIVE/backup-params.json" 960
+
+          BACKUP_LINE="$(grep -E '^RT_BACKUP name=rtlab-[0-9a-f]{12}-to-[0-9a-f]{12}-[0-9]{8}T[0-9]{6}Z\.dump sha256=[0-9a-f]{64}$' "$LIVE/backup.lines" || true)"
+          [ "$(grep -c . <<<"$BACKUP_LINE" || true)" = 1 ] || fail "backup: no single backup reference reported"
+          BACKUP_NAME="$(sed -E 's/^RT_BACKUP name=([^ ]+) sha256=.*$/\1/' <<<"$BACKUP_LINE")"
+          BACKUP_SHA256="$(sed -E 's/^.* sha256=([0-9a-f]{64})$/\1/' <<<"$BACKUP_LINE")"
+
+          jq -n --arg t "$BACKEND_RELEASE" --arg c "$CURRENT_RELEASE" --arg j "$JIRA_KEY" \
+            --arg a "$API_DIGEST" --arg w "$WORKER_DIGEST" --arg m "$MIGRATE_DIGEST" \
+            --arg bn "$BACKUP_NAME" --arg bs "$BACKUP_SHA256" --arg r "$ROLLBACK_ALLOWED" \
+            '{ReleaseTag: [$t], CurrentRelease: [$c], JiraKey: [$j], ApiDigest: [$a], WorkerDigest: [$w],
+              MigrateDigest: [$m], BackupName: [$bn], BackupSha256: [$bs], RollbackAllowed: [$r]}' > "$LIVE/deploy-params.json"
+          # Each poll window is its document's timeoutSeconds (900 / 1800) plus a minute; both fit the 3600 s
+          # role session. The host auto-revert covers a run this job stops waiting for.
+          run_document deploy "$LAB01" RT-BackendLabDeploy "$LIVE/deploy-params.json" 1860
+          grep -qx "RT_DONE release=$BACKEND_RELEASE" "$LIVE/deploy.lines" || fail "deploy: the document did not report completion"
+
+      # The live ledger: prior/target digests, backup reference, gate results and
+      # the failure boundary, built only from the strict RT_* lines. No secrets.
+      - name: Write the live ledger
+        if: always()
+        env:
+          BACKEND_RELEASE: ${{ inputs.backend_release }}
+          CURRENT_RELEASE: ${{ inputs.current_release }}
+          JIRA_KEY: ${{ inputs.jira_key }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+          ROLLBACK_ALLOWED: ${{ needs.preflight.outputs.rollback_allowed }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SSM_OUTCOME: ${{ steps.ssm.outcome }}
+        run: |
+          set -euo pipefail
+          LIVE="$RUNNER_TEMP/live"
+          OUT="$RUNNER_TEMP/live-ledger"
+          mkdir -p "$LIVE" "$OUT"
+          lines() { if [ -f "$LIVE/$1.lines" ]; then cat "$LIVE/$1.lines"; fi; }
+          FAILURE="$(cat "$LIVE/failure.txt" 2>/dev/null || true)"
+          if [ -z "$FAILURE" ] && [ "$SSM_OUTCOME" != success ]; then
+            FAILURE="live job stopped before the SSM gates (outcome: ${SSM_OUTCOME:-not-run})"
+          fi
+          jq -n \
+            --arg release "$BACKEND_RELEASE" --arg sha "$RELEASE_SHA" --arg current "$CURRENT_RELEASE" \
+            --arg jira "$JIRA_KEY" --arg actor "$ACTOR" --arg run "$RUN_URL" --arg rollback "$ROLLBACK_ALLOWED" \
+            --arg failure "$FAILURE" --arg backup "$(lines backup)" --arg deploy "$(lines deploy)" '
+            def kv: split(" ")[1:] | map(capture("^(?<key>[^=]+)=(?<value>.*)$")) | from_entries;
+            def rows: split("\n") | map(select(length > 0));
+            (($backup | rows) + ($deploy | rows)) as $all
+            | {
+                schemaVersion: 1,
+                kind: "rt842-lab-live-ledger",
+                mode: "live",
+                outcome: (if $failure == "" and ($all | any(. == "RT_DONE release=" + $release)) then "deployed" else "failed" end),
+                jiraKey: $jira, actor: $actor, runUrl: $run, generatedAt: (now | todate),
+                target: {host: "lab-01", environment: "aws-lab"},
+                release: {tag: $release, sha: $sha},
+                current: {tag: $current, source: (if ($all | any(. == "RT_GATE G-Host pass"))
+                  then "host-verified by RT-BackendLabDeploy G-Host"
+                  else "not host-verified: G-Host did not pass" end)},
+                prior: ([$all[] | select(startswith("RT_PRIOR ")) | kv] | first),
+                targetDigests: ([$all[] | select(startswith("RT_TARGET ")) | kv] | first),
+                backup: ([$all[] | select(startswith("RT_BACKUP ")) | kv] | first),
+                rollbackAllowed: ($rollback == "true"),
+                gates: [$all[] | select(startswith("RT_GATE ")) | split(" ") | {gate: .[1], result: .[2]}],
+                revert: [$all[] | select(startswith("RT_REVERT "))],
+                failureBoundary: ([$all[] | select(startswith("RT_FAIL ")) | kv] | first // (if $failure == "" then null else {reason: $failure} end))
+              }' > "$OUT/ledger.json"
+          {
+            echo "## Lab deploy live: $(jq -r '.outcome | ascii_upcase' "$OUT/ledger.json")"
+            echo
+            echo "Release $BACKEND_RELEASE ($RELEASE_SHA) over $CURRENT_RELEASE on lab-01, $JIRA_KEY. App-only rollback allowed: $ROLLBACK_ALLOWED."
+            echo
+            echo '```'
+            lines backup
+            lines deploy
+            echo '```'
+            if [ -n "$FAILURE" ]; then echo; echo "Failure boundary: $FAILURE"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the live ledger
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: deploy-lab-live-ledger-${{ github.run_id }}
+          path: ${{ runner.temp }}/live-ledger/
+          if-no-files-found: warn
+          retention-days: 90
