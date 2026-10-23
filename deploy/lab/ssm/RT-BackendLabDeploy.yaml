@@ -319,6 +319,7 @@ mainSteps:
           #!/bin/bash
           # RT-842 auto-revert (app-only): restore the pre-deploy wrapper and env, restart on them.
           set -euo pipefail
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUN_DIR/REVERT-STARTED"
           exec >>"$LOG_DIR/revert-$RUN_ID.log" 2>&1
           cp -p "$RUN_DIR/dc" "$DC"
           cp -p "$RUN_DIR/backend.env" "$BACKEND_ENV"
@@ -331,6 +332,7 @@ mainSteps:
           # RT-842: the schema changed between the releases, so no app-only revert and no
           # automatic database downgrade. Record that an owner restore or forward-fix decision is needed.
           set -euo pipefail
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUN_DIR/REVERT-STARTED"
           echo "schema changed: owner restore or forward-fix decision needed (backup $BACKUP_NAME)" > "$RUN_DIR/REVERT-BLOCKED"
           REVERT
           fi
@@ -390,13 +392,15 @@ mainSteps:
 
           # ---------------------------------------------------------------- cancel the auto-revert
           GATE=cancel-revert
-          # A fired timer is no longer active, and stopping it would still "succeed": check first.
-          systemctl is-active --quiet "$UNIT.timer" || stop "auto-revert-already-fired"
+          # A fired one-shot timer stays ActiveState=active (sub-state elapsed, RemainAfterElapse=yes),
+          # and stopping it would still "succeed": check the sub-state and the trigger time first.
+          [ "$(systemctl show -p SubState --value "$UNIT.timer")" = waiting ] || stop "auto-revert-already-fired"
+          [ "$(systemctl show -p LastTriggerUSecMonotonic --value "$UNIT.timer")" = 0 ] || stop "auto-revert-already-fired"
           systemctl stop "$UNIT.timer" || stop "auto-revert-not-cancelled"
           ! systemctl is-active --quiet "$UNIT.timer" || stop "auto-revert-still-active"
-          # The revert service must never have started, and the target must still be what runs.
-          [ "$(systemctl show -p ExecMainStartTimestampMonotonic --value "$UNIT.service")" = 0 ] || stop "auto-revert-ran"
-          [ ! -e "$RUN_DIR/REVERTED" ] && [ ! -e "$RUN_DIR/REVERT-BLOCKED" ] || stop "auto-revert-ran"
+          # The revert writes REVERT-STARTED before it touches anything, so this holds even after
+          # systemd garbage-collects the stopped units. The target must still be what runs.
+          [ ! -e "$RUN_DIR/REVERT-STARTED" ] && [ ! -e "$RUN_DIR/REVERTED" ] && [ ! -e "$RUN_DIR/REVERT-BLOCKED" ] || stop "auto-revert-ran"
           running_matches api "$API_REF" || stop "running-api-changed-after-readiness"
           running_matches worker "$WORKER_REF" || stop "running-worker-changed-after-readiness"
           say "RT_REVERT cancelled unit=$UNIT"

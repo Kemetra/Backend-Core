@@ -254,10 +254,11 @@ describe("RT-BackendLabDeploy (lab-01)", () => {
     expect(b.indexOf("too-little-revert-window-left-to-start")).toBeLessThan(b.indexOf('"$DC" up -d </dev/null ||'));
     const cancel = b.slice(b.indexOf("GATE=cancel-revert"), b.indexOf("RT_DONE"));
     expectInOrder(cancel, [
-      'systemctl is-active --quiet "$UNIT.timer" || stop "auto-revert-already-fired"',
+      // a fired one-shot timer stays active (sub-state elapsed): judge by sub-state and trigger time
+      '[ "$(systemctl show -p SubState --value "$UNIT.timer")" = waiting ] || stop "auto-revert-already-fired"',
+      '[ "$(systemctl show -p LastTriggerUSecMonotonic --value "$UNIT.timer")" = 0 ] || stop "auto-revert-already-fired"',
       'systemctl stop "$UNIT.timer"',
-      'ExecMainStartTimestampMonotonic --value "$UNIT.service")" = 0 ] || stop "auto-revert-ran"',
-      '[ ! -e "$RUN_DIR/REVERTED" ] && [ ! -e "$RUN_DIR/REVERT-BLOCKED" ] || stop "auto-revert-ran"',
+      '[ ! -e "$RUN_DIR/REVERT-STARTED" ] && [ ! -e "$RUN_DIR/REVERTED" ] && [ ! -e "$RUN_DIR/REVERT-BLOCKED" ] || stop "auto-revert-ran"',
       'running_matches api "$API_REF" || stop "running-api-changed-after-readiness"',
       'say "RT_REVERT cancelled',
     ]);
