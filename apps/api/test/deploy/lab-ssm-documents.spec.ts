@@ -231,6 +231,12 @@ describe("RT-BackendLabDeploy (lab-01)", () => {
     expect(arm).toContain('if [ "$ROLLBACK_ALLOWED" = true ]; then');
     expect(allowed).toContain('cp -p "$RUN_DIR/dc" "$DC"');
     expect(allowed).toContain('cp -p "$RUN_DIR/backend.env" "$BACKEND_ENV"');
+    // both revert variants claim the shared outcome before doing anything, and give up if it is taken
+    for (const variant of [allowed, blocked]) {
+      expect(variant).toContain('mkdir "$RUN_DIR/outcome" 2>/dev/null || exit 0');
+      expect(variant?.indexOf('mkdir "$RUN_DIR/outcome"')).toBeLessThan(variant?.indexOf("REVERT-STARTED") ?? -1);
+    }
+    expect((allowed ?? "").indexOf('mkdir "$RUN_DIR/outcome"')).toBeLessThan((allowed ?? "").indexOf('cp -p "$RUN_DIR/dc" "$DC"'));
     // after a schema change, the revert only records that an owner decision is needed
     expect(blocked).toContain("REVERT-BLOCKED");
     expect(blocked).not.toMatch(/"\$DC"|cp -p|docker/);
@@ -262,6 +268,9 @@ describe("RT-BackendLabDeploy (lab-01)", () => {
       // a fired one-shot timer stays active (sub-state elapsed): judge by sub-state and trigger time
       '[ "$(systemctl show -p SubState --value "$UNIT.timer")" = waiting ] || stop "auto-revert-already-fired"',
       '[ "$(systemctl show -p LastTriggerUSecMonotonic --value "$UNIT.timer")" = 0 ] || stop "auto-revert-already-fired"',
+      // the decision is an atomic claim the revert script also makes first, so a revert queued
+      // just before the stop can never also run after this run reports success
+      'mkdir "$RUN_DIR/outcome" 2>/dev/null || stop "auto-revert-ran"',
       'systemctl stop "$UNIT.timer"',
       '[ ! -e "$RUN_DIR/REVERT-STARTED" ] && [ ! -e "$RUN_DIR/REVERTED" ] && [ ! -e "$RUN_DIR/REVERT-BLOCKED" ] || stop "auto-revert-ran"',
       'running_matches api "$API_REF" || stop "running-api-changed-after-readiness"',
