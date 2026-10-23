@@ -1,14 +1,13 @@
 /**
- * RT-722 — the print-only OIDC claims check for the aws-lab environment
- * (.github/workflows/oidc-claims-check.yml and deploy/lab/oidc-claims-check.cjs).
- * The workflow checks are static. The helper checks run the real comparison
- * logic against synthetic tokens, so no GitHub token, AWS call or network is
- * involved.
+ * RT-722 — the OIDC claims helper (deploy/lab/oidc-claims-check.cjs), now used
+ * by the live job in deploy-lab.yml. The print-only workflow that first proved
+ * the claims was removed at gate G5 (RT-532 c13609 / c13626). The checks run the
+ * real comparison logic against synthetic tokens, so no GitHub token, AWS call or
+ * network is involved.
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import * as yaml from "js-yaml";
 
 const repoRoot = resolve(__dirname, "..", "..", "..", "..");
 // Normalise CRLF so checkouts with core.autocrlf behave like CI.
@@ -22,120 +21,6 @@ type Helper = {
 };
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const helper = require(resolve(repoRoot, "deploy/lab/oidc-claims-check.cjs")) as Helper;
-
-// ---------------------------------------------------------------- workflow
-
-type Step = { name?: string; uses?: string; run?: string; if?: string; with?: Record<string, unknown>; env?: Record<string, string> };
-type Job = { if?: string; environment?: unknown; permissions?: Record<string, string>; steps: Step[] };
-type Input = { required?: boolean; type?: string };
-type Workflow = {
-  on: Record<string, { inputs: Record<string, Input> }>;
-  permissions: unknown;
-  concurrency: { group: string; "cancel-in-progress": boolean };
-  jobs: Record<string, Job>;
-};
-
-const workflowText = read(".github/workflows/oidc-claims-check.yml");
-const workflow = yaml.load(workflowText) as Workflow;
-const jobs = Object.entries(workflow.jobs);
-const job = jobs[0]?.[1] as Job;
-const steps = job.steps;
-const tokenStep = steps.find((s) => (s.name ?? "").startsWith("Request the OIDC token")) as Step;
-const tokenScript = tokenStep.run ?? "";
-
-describe("oidc-claims-check workflow", () => {
-  it("is manual only, with one required Jira key input", () => {
-    expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
-    expect(workflow.on.workflow_dispatch?.inputs).toEqual({
-      jira_key: expect.objectContaining({ required: true, type: "string" }),
-    });
-  });
-
-  it("holds one run at a time without cancelling a running one", () => {
-    expect(workflow.concurrency).toEqual({ group: "oidc-claims-check", "cancel-in-progress": false });
-  });
-
-  it("has one job that runs in the aws-lab environment, so its reviewer approves every run", () => {
-    expect(jobs).toHaveLength(1);
-    expect(job.environment).toBe("aws-lab");
-    expect(job.if).toBeUndefined();
-  });
-
-  it("grants nothing at the top level and exactly contents:read + id-token:write to the job", () => {
-    expect(workflow.permissions).toEqual({});
-    expect(job.permissions).toEqual({ contents: "read", "id-token": "write" });
-    expect(workflowText.match(/^\s*id-token:/gm) ?? []).toHaveLength(1);
-  });
-
-  it("guards first: main ref and a validated Jira key", () => {
-    const guard = steps[0];
-    expect(guard?.name).toMatch(/^Guard/);
-    expect(guard?.env?.RUN_REF).toBe("${{ github.ref }}");
-    expect(guard?.run).toContain('"$RUN_REF" = "refs/heads/main"');
-    expect(guard?.run).toContain("^RT-[1-9][0-9]*$");
-    expect(steps.indexOf(tokenStep)).toBeGreaterThan(0);
-  });
-
-  it("uses only the pinned checkout action, without credentials or a ref", () => {
-    const uses = steps.map((s) => s.uses).filter((u): u is string => typeof u === "string");
-    expect(uses).toEqual(["actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"]);
-    const checkout = steps.find((s) => s.uses?.startsWith("actions/checkout@")) as Step;
-    expect(checkout.with?.["persist-credentials"]).toBe(false);
-    expect(checkout.with).not.toHaveProperty("ref");
-  });
-
-  it("never interpolates expressions inside run scripts (the input reaches the shell via env only)", () => {
-    for (const step of steps) if (step.run !== undefined) expect(step.run).not.toContain("${{");
-  });
-
-  it("uses no secret at all and persists nothing: no artifact, cache or output file", () => {
-    expect(workflowText).not.toMatch(/secrets\./);
-    expect(workflowText).not.toMatch(/upload-artifact|actions\/cache|GITHUB_OUTPUT|GITHUB_ENV/);
-  });
-
-  it("calls no AWS API and has no credentials step", () => {
-    for (const step of steps) {
-      expect(step.uses ?? "").not.toMatch(/aws|credentials|ssh|deploy/i);
-      expect(step.run ?? "").not.toMatch(/(^|[\s;&|(])(aws|ssh|scp|ssm|kubectl)\s/im);
-    }
-    // code only: the header comment says "no AWS_* variable"
-    const code = workflowText.replace(/^\s*#.*$/gm, "");
-    expect(code).not.toMatch(/AWS_|configure-aws-credentials|role-to-assume/);
-  });
-
-  it("asks only GitHub for the token, for the sts.amazonaws.com audience", () => {
-    expect(tokenScript).toContain('"$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com"');
-    expect(tokenScript).not.toMatch(/https?:\/\//);
-  });
-
-  it("masks the request token before the request and the OIDC token before any other use", () => {
-    const maskRequest = tokenScript.indexOf('echo "::add-mask::$ACTIONS_ID_TOKEN_REQUEST_TOKEN"');
-    const curl = tokenScript.indexOf("curl ");
-    const assign = tokenScript.indexOf('TOKEN="$(jq');
-    const maskToken = tokenScript.indexOf('echo "::add-mask::$TOKEN"');
-    const use = tokenScript.indexOf("printf '%s' \"$TOKEN\" | node deploy/lab/oidc-claims-check.cjs");
-    expect(maskRequest).toBeGreaterThan(-1);
-    expect(maskRequest).toBeLessThan(curl);
-    expect(assign).toBeGreaterThan(curl);
-    expect(maskToken).toBeGreaterThan(assign);
-    expect(use).toBeGreaterThan(maskToken);
-  });
-
-  it("touches the token only to mask it and to pipe it to the helper: no trace, no echo", () => {
-    expect(tokenScript).not.toMatch(/set\s+-\S*x|xtrace/);
-    const lines = tokenScript.split("\n").filter((l) => /\$\{?TOKEN\b/.test(l));
-    expect(lines.map((l) => l.trim())).toEqual([
-      'echo "::add-mask::$TOKEN"',
-      "printf '%s' \"$TOKEN\" | node deploy/lab/oidc-claims-check.cjs \\",
-    ]);
-  });
-
-  it("runs the helper with this workflow's own file name and the step summary", () => {
-    expect(tokenScript).toContain('--jira-key "$JIRA_KEY"');
-    expect(tokenScript).toContain("--workflow-file oidc-claims-check.yml");
-    expect(tokenScript).toContain('--summary "$GITHUB_STEP_SUMMARY"');
-  });
-});
 
 // ------------------------------------------------------------------ helper
 
