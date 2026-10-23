@@ -318,7 +318,7 @@ jobs:
     needs: preflight
     if: ${{ inputs.dry_run == false }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 60
     environment: aws-lab
     permissions:
       contents: read # checkout of main for the claim printer
@@ -465,7 +465,7 @@ jobs:
 
           jq -n --arg t "$BACKEND_RELEASE" --arg c "$CURRENT_RELEASE" --arg j "$JIRA_KEY" \
             '{ReleaseTag: [$t], CurrentRelease: [$c], JiraKey: [$j]}' > "$LIVE/backup-params.json"
-          run_document backup "$LAB02" RT-BackendLabBackup "$LIVE/backup-params.json" 1800
+          run_document backup "$LAB02" RT-BackendLabBackup "$LIVE/backup-params.json" 960
 
           BACKUP_LINE="$(grep -E '^RT_BACKUP name=rtlab-[0-9a-f]{12}-to-[0-9a-f]{12}-[0-9]{8}T[0-9]{6}Z\.dump sha256=[0-9a-f]{64}$' "$LIVE/backup.lines" || true)"
           [ "$(grep -c . <<<"$BACKUP_LINE" || true)" = 1 ] || fail "backup: no single backup reference reported"
@@ -477,8 +477,9 @@ jobs:
             --arg bn "$BACKUP_NAME" --arg bs "$BACKUP_SHA256" --arg r "$ROLLBACK_ALLOWED" \
             '{ReleaseTag: [$t], CurrentRelease: [$c], JiraKey: [$j], ApiDigest: [$a], WorkerDigest: [$w],
               MigrateDigest: [$m], BackupName: [$bn], BackupSha256: [$bs], RollbackAllowed: [$r]}' > "$LIVE/deploy-params.json"
-          # The document's own limit is 2400 s; the host auto-revert covers a run this job stops waiting for.
-          run_document deploy "$LAB01" RT-BackendLabDeploy "$LIVE/deploy-params.json" 2700
+          # Each poll window is its document's timeoutSeconds (900 / 1800) plus a minute; both fit the 3600 s
+          # role session. The host auto-revert covers a run this job stops waiting for.
+          run_document deploy "$LAB01" RT-BackendLabDeploy "$LIVE/deploy-params.json" 1860
           grep -qx "RT_DONE release=$BACKEND_RELEASE" "$LIVE/deploy.lines" || fail "deploy: the document did not report completion"
 
       # The live ledger: prior/target digests, backup reference, gate results and

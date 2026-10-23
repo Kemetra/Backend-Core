@@ -210,6 +210,43 @@ describe("RT-BackendLabDeploy (lab-01)", () => {
     expect([...b.matchAll(/systemctl stop/g)]).toHaveLength(1);
   });
 
+  it("never reports success over a revert that fired: window check before start, fired/ran checks at cancel", () => {
+    expect(b).toContain("MAX_SECONDS_BEFORE_START=720");
+    expect(b.indexOf('ARMED_AT="$(date +%s)"')).toBeLessThan(b.indexOf("too-little-revert-window-left-to-start"));
+    expect(b.indexOf("too-little-revert-window-left-to-start")).toBeLessThan(b.indexOf('"$DC" up -d </dev/null ||'));
+    const cancel = b.slice(b.indexOf("GATE=cancel-revert"), b.indexOf("RT_DONE"));
+    expectInOrder(cancel, [
+      'systemctl is-active --quiet "$UNIT.timer" || stop "auto-revert-already-fired"',
+      'systemctl stop "$UNIT.timer"',
+      'ExecMainStartTimestampMonotonic --value "$UNIT.service")" = 0 ] || stop "auto-revert-ran"',
+      '[ ! -e "$RUN_DIR/REVERTED" ] && [ ! -e "$RUN_DIR/REVERT-BLOCKED" ] || stop "auto-revert-ran"',
+      'running_matches api "$API_REF" || stop "running-api-changed-after-readiness"',
+      'say "RT_REVERT cancelled',
+    ]);
+  });
+
+  it("runs the catch-up scripts before and again after the start, as README Deploy step 4 does", () => {
+    const runs = [...b.matchAll(/-f docs\/operations\/sql\/erpnext-posting-resolution-catchup\.sql/g)].map((m) => m.index ?? -1);
+    expect(runs).toHaveLength(2);
+    expect(runs[0]).toBeLessThan(b.indexOf('"$DC" up -d </dev/null ||'));
+    expect(runs[1]).toBeGreaterThan(b.indexOf("pass start"));
+    expect(runs[1]).toBeLessThan(b.indexOf("GATE=G-Ready"));
+  });
+
+  it("extracts a fetched bundle world-readable (no secrets in it; containers bind-mount its files)", () => {
+    expect(b).toMatch(/\(umask 022 && mkdir "\$WORK\/extract" \\\n\s+&& tar -xzf/);
+  });
+
+  it("finishes inside the deploy role session: each poll window is its document timeout plus a minute", () => {
+    const wf = read(".github/workflows/deploy-lab.yml");
+    const poll = (doc: string): number => Number(new RegExp(`${doc} "\\$LIVE/\\w+-params\\.json" (\\d+)`).exec(wf)?.[1]);
+    const session = Number(/role-duration-seconds: (\d+)/.exec(wf)?.[1]);
+    expect(poll("RT-BackendLabBackup")).toBe(Number(backup.doc.mainSteps[0]?.inputs.timeoutSeconds) + 60);
+    expect(poll("RT-BackendLabDeploy")).toBe(Number(deploy.doc.mainSteps[0]?.inputs.timeoutSeconds) + 60);
+    // the claim print, credentials and node lookups need a few minutes too
+    expect(poll("RT-BackendLabBackup") + poll("RT-BackendLabDeploy") + 600).toBeLessThanOrEqual(session);
+  });
+
   it("never downgrades the database", () => {
     expect(deploy.text).not.toMatch(/migrate[^\n]*\bdown\b|\.down\.sql|pg_restore|dropdb|DROP (TABLE|SCHEMA|DATABASE)/i);
   });

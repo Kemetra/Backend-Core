@@ -374,7 +374,8 @@ runs these steps and stops at the first failure:
 4. Back up `backend.env` and the wrapper.
 5. Arm a 15-minute `systemd-run` auto-revert.
 6. Migrate, then grants, then catch-up.
-7. Start `api` + `worker` by digest.
+7. Start `api` + `worker` by digest, then run the catch-up scripts again
+   (Deploy step 4: what the previous release wrote while it still ran).
 8. `/health/ready` and `console-smoke.sh` on the origin.
 9. Cancel the auto-revert.
 
