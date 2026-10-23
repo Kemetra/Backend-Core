@@ -174,6 +174,11 @@ describe("RT-BackendLabDeploy (lab-01)", () => {
     expect(host).toContain('running_matches api "$PRIOR_API" || stop');
     expect(host).toContain('running_matches worker "$PRIOR_WORKER" || stop');
     expect(host).not.toMatch(/\bcp\b|\bmv\b|sed -i|docker (run|pull)|"\$DC" (run|up)/);
+    // an earlier run's revert unit (armed or elapsed) would undo this run
+    expect(host).toContain("--state=active,activating,reloading \\\n");
+    expect(host).toContain("'rt-deploy-revert-*' </dev/null)\" || stop \"revert-unit-query-failed\"");
+    expect(host).toContain('[ -z "$ARMED" ] || stop "an-earlier-auto-revert-is-armed-or-elapsed"');
+    expect(host.indexOf("an-earlier-auto-revert-is-armed-or-elapsed")).toBeLessThan(host.indexOf("running_matches api"));
   });
 
   it("refuses an empty or malformed backup reference (narrow anchored name, 64-hex checksum)", () => {

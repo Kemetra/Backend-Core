@@ -530,6 +530,9 @@ describe("deploy-lab workflow: live job (RT-842)", () => {
     const ledger = stepNamed("Write the live ledger", live.steps);
     expect(ledger.if).toBe("always()");
     for (const field of ["prior:", "targetDigests:", "backup:", "gates:", "failureBoundary:", "rollbackAllowed:"]) expect(ledger.run).toContain(field);
+    // the current release is "host-verified" only when the document reported G-Host passing
+    expect(ledger.run).toContain('source: (if ($all | any(. == "RT_GATE G-Host pass"))');
+    expect(ledger.run).toContain('else "not host-verified: G-Host did not pass" end)');
     expect(stepNamed("Upload the live ledger", live.steps)).toMatchObject({ if: "always()", with: { path: "${{ runner.temp }}/live-ledger/" } });
   });
 });

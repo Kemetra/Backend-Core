@@ -381,6 +381,11 @@ runs these steps and stops at the first failure:
 8. `/health/ready` and `console-smoke.sh` on the origin.
 9. Cancel the auto-revert.
 
+G-Host also refuses while any earlier run's `rt-deploy-revert-*` unit is armed,
+or has fired and still shows as elapsed. The owner checks what that revert did,
+from `/var/lib/rt-deploy/<run>/` and `/var/log/rt-deploy/`, and stops the unit
+before re-running.
+
 If the schema changed between the releases, the auto-revert only records
 that an owner restore or forward-fix decision is needed (the recovery rule
 above). The run uploads a `deploy-lab-live-ledger-<run id>` artifact with:

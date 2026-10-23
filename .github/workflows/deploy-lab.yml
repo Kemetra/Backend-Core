@@ -535,7 +535,9 @@ jobs:
                 jiraKey: $jira, actor: $actor, runUrl: $run, generatedAt: (now | todate),
                 target: {host: "lab-01", environment: "aws-lab"},
                 release: {tag: $release, sha: $sha},
-                current: {tag: $current, source: "host-verified by RT-BackendLabDeploy G-Host"},
+                current: {tag: $current, source: (if ($all | any(. == "RT_GATE G-Host pass"))
+                  then "host-verified by RT-BackendLabDeploy G-Host"
+                  else "not host-verified: G-Host did not pass" end)},
                 prior: ([$all[] | select(startswith("RT_PRIOR ")) | kv] | first),
                 targetDigests: ([$all[] | select(startswith("RT_TARGET ")) | kv] | first),
                 backup: ([$all[] | select(startswith("RT_BACKUP ")) | kv] | first),

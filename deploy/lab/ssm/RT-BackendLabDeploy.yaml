@@ -224,6 +224,11 @@ mainSteps:
           command -v docker >/dev/null && command -v python3 >/dev/null && command -v systemd-run >/dev/null && command -v curl >/dev/null || stop "host-contract-tools-missing"
           CUR_DIR="$BACKEND_DIR/release-$CURRENT_RELEASE"
           [ -f "$CUR_DIR/release.env" ] || stop "current-release-directory-missing"
+          # Each run arms its own revert unit and the lock covers only this process: an earlier run's
+          # armed (or fired, elapsed) revert would undo this one. The owner reviews and stops it first.
+          ARMED="$(systemctl list-units --all --plain --no-legend --state=active,activating,reloading \
+            'rt-deploy-revert-*' </dev/null)" || stop "revert-unit-query-failed"
+          [ -z "$ARMED" ] || stop "an-earlier-auto-revert-is-armed-or-elapsed"
           grep -qF "release-$CURRENT_RELEASE" "$DC" || stop "wrapper-does-not-use-the-current-release"
           SENTRY="$(env_value "$BACKEND_ENV" SENTRY_RELEASE)" || stop "SENTRY_RELEASE-missing-or-duplicated"
           [ "$SENTRY" = "$CUR12" ] || stop "SENTRY_RELEASE-is-not-the-current-release"
