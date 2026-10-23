@@ -176,6 +176,16 @@ describe("RT-BackendLabDeploy (lab-01)", () => {
     expect(host).not.toMatch(/\bcp\b|\bmv\b|sed -i|docker (run|pull)|"\$DC" (run|up)/);
   });
 
+  it("refuses an empty or malformed backup reference (narrow anchored name, 64-hex checksum)", () => {
+    expect(deploy.doc.parameters.BackupSha256?.allowedPattern).toBe("^[0-9a-f]{64}$");
+    expect(deploy.doc.parameters.BackupName?.allowedPattern).toBe("^rtlab-[0-9a-f]{12}-to-[0-9a-f]{12}-[0-9]{8}T[0-9]{6}Z\\.dump$");
+    expect(deploy.doc.parameters.RollbackAllowed?.allowedValues).toEqual(["true", "false"]);
+    // re-checked in bash: an empty value fails the same anchored match
+    expect(b).toContain('BACKUP_NAME="${SSM_BackupName:-}"');
+    expect(b).toContain('[[ "$BACKUP_SHA256" =~ ^[0-9a-f]{64}$ ]] || stop "BackupSha256-missing-or-invalid"');
+    expect(b).toMatch(/\[\[ "\$BACKUP_NAME" =~ \^rtlab-\(\[0-9a-f\]\{12\}\)-to-\(\[0-9a-f\]\{12\}\)-/);
+  });
+
   it("G-Backup: accepts only a fresh backup of this release pair", () => {
     const gate = b.slice(b.indexOf("GATE=G-Backup"), b.indexOf("pass G-Backup"));
     expect(gate).toContain('[ "$BK_CUR" = "$CUR12" ] && [ "$BK_TGT" = "$TGT12" ] || stop');
@@ -223,6 +233,31 @@ describe("RT-BackendLabDeploy (lab-01)", () => {
       'running_matches api "$API_REF" || stop "running-api-changed-after-readiness"',
       'say "RT_REVERT cancelled',
     ]);
+  });
+
+  it("orders migrate, grants, catch-up, up, catch-up, readiness, cancel revert", () => {
+    const catchups = [...b.matchAll(/psql_client sh -c 'psql -X -v ON_ERROR_STOP=1 -f docs\/operations\/sql\/erpnext-posting-resolution-catchup\.sql/g)].map((m) => m.index ?? -1);
+    expect(catchups).toHaveLength(2);
+    const steps = [
+      b.indexOf('"$DC" run --rm migrate </dev/null'),
+      b.indexOf("psql_client bash deploy/apply-domain-grants.sh"),
+      catchups[0] ?? -1,
+      b.indexOf('"$DC" up -d </dev/null ||'),
+      catchups[1] ?? -1,
+      b.indexOf("/api/v1/health/ready"),
+      b.indexOf('systemctl stop "$UNIT.timer"'),
+    ];
+    expect(steps.every((i) => i > -1)).toBe(true);
+    expect(steps).toEqual([...steps].sort((x, y) => x - y));
+  });
+
+  it("a failed post-start catch-up stops before readiness, leaving the auto-revert armed", () => {
+    const post = b.slice(b.indexOf("pass start"), b.indexOf("GATE=G-Ready"));
+    expect(post).toMatch(/\|\| stop "post-start-catch-up-failed"/);
+    // stop() exits; the only cancel is after readiness and the smoke
+    expect(b).toMatch(/stop\(\) \{ [^}]*exit 1; \}/);
+    expect(b.indexOf('systemctl stop "$UNIT.timer"')).toBeGreaterThan(b.indexOf("pass console-smoke"));
+    expect(b).not.toMatch(/trap[^\n]*systemctl/);
   });
 
   it("runs the catch-up scripts before and again after the start, as README Deploy step 4 does", () => {

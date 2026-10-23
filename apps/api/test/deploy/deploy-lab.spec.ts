@@ -436,6 +436,26 @@ describe("deploy-lab workflow: live job (RT-842)", () => {
     expect(ssm).toContain('deadline=$(( $(date +%s) + limit ))');
   });
 
+  it("lets no operator set RollbackAllowed or the backup reference: they come from this run's verifier and lab-02 output", () => {
+    const inputs = Object.keys(workflow.on.workflow_dispatch?.inputs ?? {});
+    expect(inputs.sort()).toEqual(["backend_release", "current_release", "dry_run", "jira_key", "target"]);
+    expect(inputs.some((i) => /rollback|backup/i.test(i))).toBe(false);
+    // RollbackAllowed: verifier ledger -> preflight step output -> job output -> live env, never an input
+    expect(preflight.outputs?.rollback_allowed).toBe("${{ steps.plan.outputs.rollback_allowed }}");
+    for (const step of live.steps.filter((s) => s.env?.ROLLBACK_ALLOWED !== undefined)) {
+      expect(step.env?.ROLLBACK_ALLOWED).toBe("${{ needs.preflight.outputs.rollback_allowed }}");
+    }
+    // undecidable (no verified current release, or any rollback doubt) is false
+    expect(stepNamed("Export the verified plan").run).toContain(
+      "(.plan.migrations.added != null and .plan.migrations.rollback.allowed == true) | tostring",
+    );
+    // BackupName / BackupSha256 exist only as shell variables parsed from the backup command's RT_BACKUP line
+    expect(workflowText).not.toMatch(/inputs\.\w*backup|BACKUP_NAME: \$\{\{|BACKUP_SHA256: \$\{\{/i);
+    const ssm = String(stepNamed("Run the SSM gates", live.steps).run);
+    expect(ssm.indexOf('run_document backup "$LAB02"')).toBeLessThan(ssm.indexOf('BACKUP_LINE="$(grep -E'));
+    expect(ssm).toContain("^RT_BACKUP name=rtlab-[0-9a-f]{12}-to-[0-9a-f]{12}-[0-9]{8}T[0-9]{6}Z\\.dump sha256=[0-9a-f]{64}$");
+  });
+
   it("passes the documents exactly their parameters", () => {
     const ssm = String(stepNamed("Run the SSM gates", live.steps).run);
     const keys = (label: string): string[] => {
