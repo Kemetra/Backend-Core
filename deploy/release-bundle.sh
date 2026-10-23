@@ -14,6 +14,9 @@ set -euo pipefail
 
 # Files shipped in the bundle. The SQL entries must stay identical to the
 # `psql -f` scripts in the Deploy section of deploy/README.md (a test checks).
+# The routine domain-grant scripts are NOT listed here (RT-812): they are
+# appended below from `deploy/apply-domain-grants.sh --list`, the same set
+# README step 2 applies, so adding a grant script needs no edit to this file.
 # auth-lookup-role.sql is NOT listed: README prerequisite 7 runs it once after
 # the first `migrate up`, it is not part of the per-deploy sequence.
 # The packages/db/drizzle entries are the migrations the catch-up scripts pull
@@ -23,25 +26,7 @@ ALLOWLIST=(
   docker-compose.release.yml
   Caddyfile
   deploy/console-smoke.sh
-  docs/operations/sql/cashier-admissions-domain-grants.sql
-  docs/operations/sql/shift-cash-up-domain-grants.sql
-  docs/operations/sql/erpnext-posting-resolution-domain-grants.sql
-  docs/operations/sql/inventory-effect-integration-domain-grants.sql
-  docs/operations/sql/stock-locations-domain-grants.sql
-  docs/operations/sql/tracking-foundation-domain-grants.sql
-  docs/operations/sql/signin-memberships-domain-grants.sql
-  docs/operations/sql/sale-reprints-domain-grants.sql
-  docs/operations/sql/device-lifecycle-domain-grants.sql
-  docs/operations/sql/sale-responsibilities-domain-grants.sql
-  docs/operations/sql/shift-variance-policy-domain-grants.sql
-  docs/operations/sql/sale-credit-reversals-domain-grants.sql
-  docs/operations/sql/inventory-position-events-domain-grants.sql
-  docs/operations/sql/platform-support-sessions-domain-grants.sql
-  docs/operations/sql/inventory-anchors-domain-grants.sql
-  docs/operations/sql/refund-executions-domain-grants.sql
-  docs/operations/sql/pos-device-health-domain-grants.sql
-  docs/operations/sql/shift-forced-closes-domain-grants.sql
-  docs/operations/sql/inventory-safety-domain-grants.sql
+  deploy/apply-domain-grants.sh
   docs/operations/sql/sale-responsibilities-feed-rehead.sql
   docs/operations/sql/erpnext-posting-resolution-catchup.sql
   docs/operations/sql/inventory-effect-integration-catchup.sql
@@ -85,6 +70,12 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+
+# RT-812: the routine domain-grant scripts, selected by their opt-in marker
+# exactly as deploy/apply-domain-grants.sh applies them in README step 2.
+ROUTINE_GRANTS="$(bash deploy/apply-domain-grants.sh --list)" || fail "could not list the routine grant scripts"
+mapfile -t ROUTINE_GRANT_FILES <<< "$ROUTINE_GRANTS"
+ALLOWLIST+=("${ROUTINE_GRANT_FILES[@]}")
 
 HEAD_SHA="$(git rev-parse HEAD)"
 [ "$HEAD_SHA" = "$SHA" ] || fail "checkout HEAD ($HEAD_SHA) does not match --sha"

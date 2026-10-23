@@ -63,6 +63,9 @@ const SUMS_LINE_RE = /^([0-9a-f]{64}) [ *](\S+)$/;
 const LS_TREE_RE = /^\d{6} (blob|tree) ([0-9a-f]{40})\t(.+)$/;
 // The ALLOWLIST=( ... ) array in deploy/release-bundle.sh (the same parse release-images.spec.ts uses).
 const ALLOWLIST_RE = /^ALLOWLIST=\(\r?\n([\s\S]*?)^\)/m;
+// RT-812: release-bundle.sh appends the routine grant scripts this selector lists.
+const ROUTINE_GRANTS_SELECTOR = "bash deploy/apply-domain-grants.sh --list";
+const ROUTINE_GRANT_MARKER = "-- deploy: every-release";
 // One plain assignment of a digest ref to an upper-case key: nothing a shell could expand or run.
 const ENV_LINE_RE = /^([A-Z][A-Z0-9_]{0,63})=(ghcr\.io\/kemetra\/backend-core-(?:api|worker|migrate)@sha256:[0-9a-f]{64})$/;
 const ROLE_ARN_RE = /^arn:aws:iam::\d{12}:role\/[\w+=,.@/-]+$/;
@@ -373,6 +376,23 @@ function checkBundle(dir, manifestBuf, manifest, images) {
   return problems;
 }
 
+/**
+ * RT-812: the routine grant scripts at the release commit, selected exactly as
+ * deploy/apply-domain-grants.sh --list selects them (a *-domain-grants.sql file
+ * under docs/operations/sql with the opt-in marker line).
+ */
+function routineGrantScripts(sourceDir) {
+  const sqlDir = path.join(sourceDir, "docs", "operations", "sql");
+  if (!fs.existsSync(sqlDir)) return [];
+  return fs
+    .readdirSync(sqlDir)
+    .filter((name) => name.endsWith("-domain-grants.sql"))
+    .filter((name) => fs.lstatSync(path.join(sqlDir, name)).isFile())
+    .filter((name) => (readText(path.join(sqlDir, name)) ?? "").replace(/\r/g, "").split("\n").includes(ROUTINE_GRANT_MARKER))
+    .sort()
+    .map((name) => `docs/operations/sql/${name}`);
+}
+
 /** The bundle allowlist that deploy/release-bundle.sh had at the release commit, or null. */
 function readAllowlist(sourceDir) {
   const script = readText(path.join(sourceDir, "deploy", "release-bundle.sh"));
@@ -382,6 +402,8 @@ function readAllowlist(sourceDir) {
     .split(/\r?\n/)
     .map((l) => l.replace(/#.*/, "").trim())
     .filter(Boolean);
+  // RT-812: from then on the bundle also appends the selector's routine grant scripts.
+  if (script.includes(ROUTINE_GRANTS_SELECTOR)) files.push(...routineGrantScripts(sourceDir));
   return files.length ? files : null;
 }
 

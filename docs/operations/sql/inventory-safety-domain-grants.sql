@@ -9,8 +9,9 @@
 -- never as a URL argument, and pass the environment's DATABASE_URL role name:
 --   psql -X -v domain_role=<role> \
 --        -f docs/operations/sql/inventory-safety-domain-grants.sql
--- deploy/README.md runs this in step 2 of every release, after
--- refund-executions-domain-grants.sql.
+-- deploy/apply-domain-grants.sh runs this in step 2 of every release
+-- (deploy/README.md), selected by the marker on the next line (RT-812):
+-- deploy: every-release
 --
 -- The script stops on the first error and exits non-zero (ON_ERROR_STOP), and
 -- also exits non-zero if the verification below finds a missing grant, so
@@ -30,9 +31,10 @@
 --   no UPDATE or DELETE policy).
 -- tracking_holds: SELECT, INSERT and UPDATE (a release; a trigger lets only
 --   the release be set, once). No DELETE policy.
--- tracking_identities: UPDATE added to 0045's SELECT (the expiry correction;
---   0072's guard lets only expiry_date change, and only with its correction
---   row in the same transaction). Table-level, because the boot check
+-- tracking_identities: UPDATE only, added to 0045's SELECT (which
+--   tracking-foundation-domain-grants.sql grants and verifies). The expiry
+--   correction: 0072's guard lets only expiry_date change, and only with its
+--   correction row in the same transaction. Table-level, because the boot check
 --   (has_table_privilege) cannot see a column grant; the guard is the column
 --   fence.
 -- Never grant DELETE or TRUNCATE on any of them: TRUNCATE is not subject to
@@ -53,7 +55,7 @@ GRANT SELECT, INSERT ON inventory_safety_changes TO :"domain_role";
 GRANT SELECT, INSERT ON inventory_recalls TO :"domain_role";
 GRANT SELECT, INSERT, UPDATE ON tracking_holds TO :"domain_role";
 GRANT SELECT, INSERT ON tracking_identity_expiry_corrections TO :"domain_role";
-GRANT SELECT, UPDATE ON tracking_identities TO :"domain_role";
+GRANT UPDATE ON tracking_identities TO :"domain_role";
 
 -- Verify the domain role: every row must read `t`.
 SELECT t.tbl, t.priv, has_table_privilege(:'domain_role', t.tbl, t.priv) AS granted
@@ -69,7 +71,6 @@ SELECT t.tbl, t.priv, has_table_privilege(:'domain_role', t.tbl, t.priv) AS gran
                ('tracking_holds', 'UPDATE'),
                ('tracking_identity_expiry_corrections', 'SELECT'),
                ('tracking_identity_expiry_corrections', 'INSERT'),
-               ('tracking_identities', 'SELECT'),
                ('tracking_identities', 'UPDATE')) AS t(tbl, priv);
 
 SELECT bool_and(has_table_privilege(:'domain_role', t.tbl, t.priv)) AS domain_ok
@@ -85,7 +86,6 @@ SELECT bool_and(has_table_privilege(:'domain_role', t.tbl, t.priv)) AS domain_ok
                ('tracking_holds', 'UPDATE'),
                ('tracking_identity_expiry_corrections', 'SELECT'),
                ('tracking_identity_expiry_corrections', 'INSERT'),
-               ('tracking_identities', 'SELECT'),
                ('tracking_identities', 'UPDATE')) AS t(tbl, priv) \gset
 
 \if :domain_ok

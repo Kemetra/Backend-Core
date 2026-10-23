@@ -11,6 +11,8 @@
 import { spawn, type SpawnOptions } from "node:child_process";
 import { resolve } from "node:path";
 import { startPgEnv, stopPgEnv, type PgTestEnv } from "../_helpers/postgres-container";
+import type { ProbeDb } from "./migration-probes";
+import { probeMismatches, resolveMigrationRegistry } from "./migration-registry";
 
 const CLI_PATH = resolve(__dirname, "..", "..", "dist", "cli", "migrate.js");
 
@@ -164,86 +166,16 @@ describe("data-pulse-migrate CLI", () => {
   // --- Live up / down / status (state shared with the rest of this block) -
 
   /**
-   * Expected migration ledger. Update this list as new migrations land —
-   * the rest of the suite derives every other assertion from it.
-   *
-   * Order matches lex-sorted filenames in `packages/db/drizzle/`, which is
-   * the order the runner applies (and the inverse order it rolls back).
+   * RT-812: the expected ledger is the migration registry (./migrations/:
+   * the frozen baseline plus one file per later migration), checked against
+   * packages/db/drizzle/ when this suite loads: a stray, deleted or down-less
+   * migration, or a head without a biting probe, fails before any test runs.
+   * Order is the lex-sorted file names, the order the runner applies (and the
+   * inverse it rolls back).
    */
-  const EXPECTED_MIGRATIONS = [
-    "0000_initial",
-    "0001_pos_operator_identity",
-    "0002_shifts",
-    "0003_session_active_store_tenant_invariant",
-    "0004_audit_retention_marker",
-    "0005_audit_retention_privileges",
-    "0006_outbox_events",
-    "0007_catalog",
-    "0008_catalog_store_read_isolation",
-    "0009_catalog_store_empty_guc_fix",
-    "0010_catalog_tenant_empty_guc_fix",
-    "0011_catalog_store_carveout_sentinel",
-    "0012_sales",
-    "0013_store_timezone",
-    "0014_inventory",
-    "0015_pos_catalog_read_down",
-    "0016_inventory_unit_guard",
-    "0017_erpnext_item_map",
-    "0018_erpnext_warehouse_map",
-    "0019_erpnext_posting_status",
-    "0020_erpnext_reconciliation",
-    "0021_connector_registration",
-    "0022_connector_health",
-    "0023_erpnext_product_reconciliation",
-    "0024_pairing_codes",
-    "0025_external_identity_links",
-    "0026_sale_sync_status",
-    "0027_settlement_receivables",
-    "0028_outbox_claim_recovery",
-    "0029_session_credential_hash",
-    "0030_session_membership_trigger",
-    "0031_outbox_tenant_fk",
-    "0032_sale_returns",
-    "0033_sale_tenders",
-    "0034_audit_events_append_only",
-    "0035_cashier_admissions",
-    "0036_shift_cash_up",
-    "0037_erpnext_posting_resolution",
-    "0038_erpnext_posting_resolution_backfill",
-    "0039_erpnext_posting_reconciliation_evidence",
-    "0040_device_lifecycle",
-    "0041_sale_tender_ref",
-    "0042_inventory_effects_journal",
-    "0043_inventory_effect_integration_backfill",
-    "0044_stock_locations_position_grain",
-    "0045_tracking_foundation",
-    "0046_sale_void_approval",
-    "0047_sale_history_capture",
-    "0048_sales_store_business_date_idx",
-    "0050_shift_variance_policy",
-    "0051_sale_responsibilities",
-    "0054_sale_credit_reversals",
-    "0055_ai_entitlements_usage",
-    "0056_inventory_position_events",
-    "0057_posting_status_posted_at_tenant_idx",
-    "0058_posting_status_posted_at_store_idx",
-    "0059_posting_status_pending_created_tenant_idx",
-    "0060_posting_status_pending_created_store_idx",
-    "0061_posting_status_legacy_posted_idx",
-    "0062_platform_support_sessions",
-    "0063_inventory_effects_activation",
-    "0064_stock_movements_store_occurred_idx",
-    "0065_stock_movements_store_product_occurred_idx",
-    "0066_reconciliation_pending_aware_classes",
-    "0067_refund_executions",
-    "0068_pos_device_health",
-    "0070_shift_forced_closes",
-    "0071_erpnext_posting_rejection_message",
-    "0072_inventory_safety",
-    "0073_device_build_identity",
-  ] as const;
-
-  const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
+  const REGISTRY = resolveMigrationRegistry();
+  const EXPECTED_MIGRATIONS = REGISTRY.ids;
+  const LATEST_MIGRATION = REGISTRY.head;
   const SECOND_LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 2]!;
 
   /** The two tables created by 0035_cashier_admissions (RT-113 BC2). */
@@ -314,371 +246,41 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicColumn("stock_movements", "tracking_identity_id")).toBe("1");
   }
 
-  /** 0046_sale_void_approval (RT-530): the six approval columns, their CHECK and the single-use index. */
-  const SALE_VOID_APPROVAL_COLUMNS = [
-    "approval_id",
-    "approved_by_user_id",
-    "requested_by_user_id",
-    "approval_policy_version",
-    "approved_at",
-    "void_business_date",
-  ] as const;
-  async function countSaleVoidApprovalObjects(): Promise<[string, string, string]> {
-    let columns = 0;
-    for (const column of SALE_VOID_APPROVAL_COLUMNS) {
-      columns += Number(await countPublicColumn("sale_voids", column));
-    }
-    return [
-      String(columns),
-      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
-        WHERE conname = 'sale_voids_approval_all_or_none'`),
-      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_indexes
-        WHERE schemaname = 'public' AND indexname = 'uq_sale_voids_tenant_approval'`),
-    ];
+  /** The admin connection as the probes see it. */
+  const probeDb: ProbeDb = { count: queryCount };
+
+  /** Every probe's current reading (./migrations/: 0046 on, plus each later migration's own). */
+  async function readProbes(): Promise<Map<string, readonly string[]>> {
+    const readings = new Map<string, readonly string[]>();
+    for (const [id, probe] of REGISTRY.probes) readings.set(id, await probe.measure(probeDb));
+    return readings;
   }
 
-  /** 0047_sale_history_capture (RT-538): the receipt snapshot, line_seq and sale_reprints. */
-  const RECEIPT_COLUMNS = [
-    "receipt_sale_number",
-    "receipt_number",
-    "receipt_terminal_label",
-    "receipt_operator_display_name",
-    "receipt_settled_at",
-    "receipt_branch_name",
-    "receipt_branch_address",
-    "receipt_tax_registration_id",
-    "receipt_change_given",
-  ] as const;
-  const REPRINT_TABLES = ["sale_reprints"];
-  async function countSaleHistoryCaptureObjects(): Promise<[string, string, string, string]> {
-    let columns = 0;
-    for (const column of RECEIPT_COLUMNS) {
-      columns += Number(await countPublicColumn("sales", column));
-    }
-    return [
-      String(columns),
-      await countPublicColumn("sale_lines", "line_seq"),
-      await countPublicTables(REPRINT_TABLES),
-      await countPolicies(REPRINT_TABLES),
-    ];
+  /** The `rolledBack` migrations read rolled back; every other probed migration reads applied. */
+  async function expectProbeState(rolledBack: ReadonlySet<string>): Promise<void> {
+    expect(probeMismatches(REGISTRY.probes, await readProbes(), rolledBack)).toEqual([]);
   }
 
   /**
-   * 0048_sales_store_business_date_idx (RT-538): "1" when the store/business-date
-   * index exists AND is valid. It is built CONCURRENTLY by the runner, so this
-   * also proves the single-statement file ran outside a transaction block.
-   */
-  function countValidSaleHistoryIndex(): Promise<string> {
-    return queryCount(`SELECT COUNT(*)::text AS count FROM pg_index i
-      JOIN pg_class c ON c.oid = i.indexrelid
-      WHERE c.relname = 'idx_sales_tenant_store_business_date' AND i.indisvalid`);
-  }
-
-  /** 0050_shift_variance_policy (RT-385): its two tables, their policies and the new columns. */
-  const SHIFT_VARIANCE_POLICY_TABLES = ["cash_variance_policy_revisions", "shift_close_approver_checks"];
-  async function countShiftVariancePolicyObjects(): Promise<[string, string, string, string]> {
-    return [
-      await countPublicTables(SHIFT_VARIANCE_POLICY_TABLES),
-      await countPolicies(SHIFT_VARIANCE_POLICY_TABLES),
-      await queryCount(`SELECT COUNT(*)::text AS count FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'shifts'
-          AND column_name LIKE 'frozen_policy%'`),
-      await queryCount(`SELECT COUNT(*)::text AS count FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'shift_closes'
-          AND column_name IN ('approval_required_by_policy', 'approval_missing')`),
-    ];
-  }
-
-  /**
-   * 0051_sale_responsibilities (RT-418): [table, its policies, sales.responsibility_count,
-   * erpnext_posting_resolution.payer_external_ref, payer_account.credit_terms].
-   */
-  async function countSaleResponsibilityObjects(): Promise<[string, string, string, string, string]> {
-    return [
-      await countPublicTables(["sale_responsibilities"]),
-      await countPolicies(["sale_responsibilities"]),
-      await countPublicColumn("sales", "responsibility_count"),
-      await countPublicColumn("erpnext_posting_resolution", "payer_external_ref"),
-      await countPublicColumn("payer_account", "credit_terms"),
-    ];
-  }
-
-  /**
-   * 0054_sale_credit_reversals (RT-577): [its three tables, their policies, the
-   * sale_voids approval-use trigger, the (id, sale_id) FK-target indexes on
-   * sale_voids and sale_returns].
-   */
-  async function countSaleCreditReversalObjects(): Promise<[string, string, string, string]> {
-    return [
-      await countPublicTables(CREDIT_REVERSAL_TABLES),
-      await countPolicies(CREDIT_REVERSAL_TABLES),
-      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
-        WHERE tgname = 'sale_voids_record_approval_use'`),
-      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_indexes
-        WHERE schemaname = 'public' AND indexname IN ('uq_sale_voids_id_sale', 'uq_sale_returns_id_sale')`),
-    ];
-  }
-
-  /** The seven tables created by 0055_ai_entitlements_usage (RT-663). */
-  const AI_ENTITLEMENT_TABLES = [
-    "ai_plan_catalog",
-    "ai_plan_catalog_features",
-    "ai_plan_catalog_meters",
-    "tenant_ai_entitlements",
-    "tenant_ai_feature_opt_outs",
-    "ai_usage_counters",
-    "ai_usage_ledger",
-  ];
-
-  /**
-   * 0055_ai_entitlements_usage (RT-663): [its seven tables, their policies, its
-   * four trigger functions, the default-deny catalog seed rows].
-   */
-  async function countAiEntitlementObjects(): Promise<[string, string, string, string]> {
-    const tables = await countPublicTables(AI_ENTITLEMENT_TABLES);
-    return [
-      tables,
-      await countPolicies(AI_ENTITLEMENT_TABLES),
-      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_proc
-        WHERE proname IN ('ai_entitlements_append_only', 'ai_plan_catalog_version_open',
-                          'ai_usage_counters_guard', 'ai_usage_ledger_terminal_guard')`),
-      tables === "0" ? "0" : await queryCount(`SELECT COUNT(*)::text AS count FROM ai_plan_catalog`),
-    ];
-  }
-
-  /** The two tables created by 0056_inventory_position_events (RT-435). */
-  const POSITION_EVENT_TABLES = ["inventory_position_events", "tenant_inventory_settings"];
-
-  /**
-   * 0056_inventory_position_events (RT-435): [its two tables, their policies
-   * (events SELECT + INSERT, settings SELECT + INSERT + UPDATE), the settings
-   * updated_at trigger].
-   */
-  async function countPositionEventObjects(): Promise<[string, string, string]> {
-    return [
-      await countPublicTables(POSITION_EVENT_TABLES),
-      await countPolicies(POSITION_EVENT_TABLES),
-      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
-        WHERE tgname = 'tenant_inventory_settings_set_updated_at'`),
-    ];
-  }
-
-  /** The five posting-freshness indexes of 0057-0061 (RT-565 D7), in migration order. */
-  const POSTING_FRESHNESS_INDEXES = [
-    "idx_erpnext_posting_status_posted_at_tenant",
-    "idx_erpnext_posting_status_posted_at_store",
-    "idx_erpnext_posting_status_pending_created_tenant",
-    "idx_erpnext_posting_status_pending_created_store",
-    "idx_erpnext_posting_status_legacy_posted",
-  ] as const;
-
-  /**
-   * 0057-0061 (RT-565): how many of `names` exist AND are valid. Each is built
-   * CONCURRENTLY by the runner, so a valid index also proves its single-statement
-   * file ran outside a transaction block.
-   */
-  function countValidIndexes(names: readonly string[]): Promise<string> {
-    return queryCount(`SELECT COUNT(*)::text AS count FROM pg_index i
-      JOIN pg_class c ON c.oid = i.indexrelid
-      WHERE c.relname = ANY(ARRAY[${names.map((n) => `'${n}'`).join(", ")}]) AND i.indisvalid`);
-  }
-
-  /** The two stock-movement history indexes of 0064-0065 (RT-735), in migration order. */
-  const STOCK_MOVEMENT_HISTORY_INDEXES = [
-    "idx_stock_movements_tenant_store_occurred",
-    "idx_stock_movements_tenant_store_product_occurred",
-  ] as const;
-
-  /**
-   * 0062_platform_support_sessions (RT-414): [the table, its one platform-admin
-   * policy, its two guard triggers, its guard function].
-   */
-  async function countSupportSessionObjects(): Promise<[string, string, string, string]> {
-    return [
-      await countPublicTables(["platform_support_sessions"]),
-      await countPolicies(["platform_support_sessions"]),
-      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
-        WHERE tgname IN ('platform_support_sessions_guard_row', 'platform_support_sessions_guard_truncate')`),
-      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_proc
-        WHERE proname = 'platform_support_sessions_guard'`),
-    ];
-  }
-
-  /** The two tables created by 0063_inventory_effects_activation (RT-427). */
-  const ANCHOR_TABLES = ["inventory_anchors", "inventory_anchor_lines"];
-
-  /**
-   * 0063_inventory_effects_activation (RT-427): [its two tables, their
-   * SELECT + INSERT policies, the two activation columns on
-   * tenant_inventory_settings].
-   */
-  async function countAnchorObjects(): Promise<[string, string, string]> {
-    const columns =
-      Number(await countPublicColumn("tenant_inventory_settings", "sale_effects_activated_at")) +
-      Number(await countPublicColumn("tenant_inventory_settings", "sale_effects_activated_by"));
-    return [await countPublicTables(ANCHOR_TABLES), await countPolicies(ANCHOR_TABLES), String(columns)];
-  }
-
-  /**
-   * 0066_reconciliation_pending_aware_classes (RT-428): how many result-class
-   * CHECKs admit the pending-aware classes ("1" when applied, "0" after down).
-   */
-  function countPendingAwareClassCheck(): Promise<string> {
-    return queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
-      WHERE conname = 'erpnext_reconciliation_result_class_valid'
-        AND pg_get_constraintdef(oid) LIKE '%uom_mismatch%' AND convalidated`);
-  }
-
-  /**
-   * 0067_refund_executions (RT-787): [the refund_executions table, its SELECT +
-   * INSERT policies, the three allocation columns on sale_return_tenders plus
-   * sale_returns.posting_deferred, the original-tender trigger].
-   */
-  async function countRefundExecutionObjects(): Promise<[string, string, string, string]> {
-    const columns =
-      Number(await countPublicColumn("sale_return_tenders", "allocation_ref")) +
-      Number(await countPublicColumn("sale_return_tenders", "original_tender_ref")) +
-      Number(await countPublicColumn("sale_return_tenders", "instrument")) +
-      Number(await countPublicColumn("sale_returns", "posting_deferred"));
-    const trigger = await queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
-      WHERE tgname = 'sale_return_tenders_original_tender_check'`);
-    return [
-      await countPublicTables(["refund_executions"]),
-      await countPolicies(["refund_executions"]),
-      String(columns),
-      trigger,
-    ];
-  }
-
-  /** The five tables created by 0072_inventory_safety (RT-449). */
-  const SAFETY_TABLES = [
-    "tenant_inventory_safety_revisions",
-    "inventory_safety_changes",
-    "inventory_recalls",
-    "tracking_holds",
-    "tracking_identity_expiry_corrections",
-  ];
-
-  /**
-   * 0068_pos_device_health (RT-327): [its two tables, their SELECT + INSERT +
-   * UPDATE policies] ("0" and "0" after down).
-   */
-  async function countPosDeviceHealthObjects(): Promise<[string, string]> {
-    const tables = ["device_health", "pos_version_policy"];
-    return [await countPublicTables(tables), await countPolicies(tables)];
-  }
-
-  /**
-   * 0070_shift_forced_closes (RT-742): [the force-close table, its SELECT +
-   * INSERT policies, its two composite FK targets on shifts and devices].
-   */
-  async function countShiftForcedCloseObjects(): Promise<[string, string, string]> {
-    const targets = await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
-      WHERE conname IN ('uq_shifts_force_close_target', 'uq_devices_tenant_store_target')`);
-    return [
-      await countPublicTables(["shift_forced_closes"]),
-      await countPolicies(["shift_forced_closes"]),
-      targets,
-    ];
-  }
-
-  /**
-   * 0071_erpnext_posting_rejection_message (RT-410): [the rejection_message
-   * column, its two validated CHECKs].
-   */
-  async function countRejectionMessageObjects(): Promise<[string, string]> {
-    const checks = await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
-      WHERE conname IN ('erpnext_posting_status_rejection_message_length',
-                        'erpnext_posting_status_rejection_message_when_rejected') AND convalidated`);
-    return [await countPublicColumn("erpnext_posting_status", "rejection_message"), checks];
-  }
-
-  /**
-   * 0072_inventory_safety (RT-449): [its five tables, their policies
-   * (revisions and holds SELECT + INSERT + UPDATE, the other three SELECT +
-   * INSERT), tenant_inventory_settings.safety_ttl_seconds, the
-   * tracking_identities policies (0045's SELECT + INSERT, plus 0072's UPDATE)].
-   */
-  async function countInventorySafetyObjects(): Promise<[string, string, string, string]> {
-    return [
-      await countPublicTables(SAFETY_TABLES),
-      await countPolicies(SAFETY_TABLES),
-      await countPublicColumn("tenant_inventory_settings", "safety_ttl_seconds"),
-      await countPolicies(["tracking_identities"]),
-    ];
-  }
-
-  /**
-   * 0073_device_build_identity (RT-719): how many of its four devices columns
-   * exist ("4" when applied, "0" after down).
-   */
-  async function countBuildIdentityColumns(): Promise<string> {
-    const columns = ["reported_build_commit", "reported_app_version", "reported_contract_pin", "build_reported_at"];
-    const counts = await Promise.all(columns.map((column) => countPublicColumn("devices", column)));
-    return String(counts.reduce((sum, n) => sum + Number(n), 0));
-  }
-
-  /**
-   * After one `down` from head: 0073's four build identity columns are gone,
-   * while 0072's safety tables, TTL column and tracking_identities UPDATE
-   * policy, 0071's rejection_message column and its CHECKs, 0070's
-   * force-close table and its two UNIQUE targets,
-   * 0068's device health and version policy tables,
-   * 0067's refund executions, allocation columns,
-   * posting_deferred and original-tender trigger, 0066's
-   * pending-aware result classes, 0064-0065's stock-movement history
-   * indexes, 0063's anchor tables and activation columns, 0062's
-   * support-session table, 0057-0061's freshness indexes, 0056's event-record and settings tables,
-   * 0055's AI entitlement tables and functions, 0054's credit reversal
-   * tables, approval-use ledger, trigger and FK-target indexes, 0051's
-   * sale_responsibilities, 0050's policy tables and columns, 0048's
-   * store/business-date index and everything older survive.
+   * After one `down` from head: the head's own objects are gone (its probe
+   * reads rolled back), every other probed migration's objects survive, and
+   * everything below 0046 survives.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    // 0073's four devices columns (RT-719) are gone.
-    expect(await countBuildIdentityColumns()).toBe("0");
-    // 0072's safety objects (RT-449) stay.
-    expect(await countInventorySafetyObjects()).toEqual(["5", "12", "1", "3"]);
-    // 0071's rejection_message column and its two validated CHECKs (RT-410) stay.
-    expect(await countRejectionMessageObjects()).toEqual(["1", "2"]);
-    // 0070's force-close table and its two UNIQUE targets (RT-742) stay.
-    expect(await countShiftForcedCloseObjects()).toEqual(["1", "2", "2"]);
-    await expectShiftCashUpApplied();
-    // 0068's two tables (RT-327), 0067's refund executions and 0066's
-    // pending-aware CHECK stay.
-    expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
-    expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
-    expect(await countPendingAwareClassCheck()).toBe("1");
-    expect(
-      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
-        WHERE conname = 'erpnext_reconciliation_result_class_valid'`),
-    ).toBe("1");
-    expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
-    expect(await countAnchorObjects()).toEqual(["2", "4", "2"]);
-    expect(await countSupportSessionObjects()).toEqual(["1", "1", "2", "1"]);
-    expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES)).toBe("5");
-    expect(await countPositionEventObjects()).toEqual(["2", "5", "1"]);
-    expect(await countAiEntitlementObjects()).toEqual(["7", "15", "4", "1"]);
-    expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
-    expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
-    expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
-    expect(await countValidSaleHistoryIndex()).toBe("1");
-    await expectBelow0048Applied();
+    await expectProbeState(new Set([LATEST_MIGRATION]));
+    await expectBelow0046Applied();
   }
 
   /**
-   * Everything below 0048 is applied: 0047's receipt columns, line_seq and
-   * sale_reprints survive, as do 0046's approval columns on sale_voids, their CHECK and the single-use index,
-   * 0045's tracking tables, the tenant_products Tracking Profile and
+   * Everything below 0046 is applied: 0032's sale_voids.business_date, 0045's
+   * tracking tables, the tenant_products Tracking Profile and
    * stock_movements.tracking_identity_id, 0044's stock_locations table, its
    * store trigger and the stock_movements position constraints, 0042's
    * integration table and effect columns (with 0043's backfill), 0041's tender
    * columns, 0040's device lifecycle columns, 0039's evidence column and
    * 0037/0038's resolution table.
    */
-  async function expectBelow0048Applied(): Promise<void> {
-    expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
-    expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
+  async function expectBelow0046Applied(): Promise<void> {
     // 0032's void columns survive.
     expect(await countPublicColumn("sale_voids", "business_date")).toBe("1");
     await expectTrackingFoundationApplied();
@@ -696,65 +298,10 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countResolutionVersionColumn()).toBe("1");
   }
 
-  /** Every migration from 0046 to the head is applied. */
+  /** Every migration from 0046 to the head is applied: every probe reads applied. */
   async function expectFrom0046Applied(): Promise<void> {
-    // 0046's approval columns, CHECK and single-use index on sale_voids (RT-530).
-    expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
-    // 0047's nine receipt columns, line_seq, sale_reprints and its SELECT +
-    // INSERT policies (RT-538).
-    expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
-    // 0048's store/business-date index, valid after the runner's CONCURRENTLY build (RT-538).
-    expect(await countValidSaleHistoryIndex()).toBe("1");
-    // 0050's policy revisions and approver verdicts (SELECT + INSERT policies
-    // each), six frozen-policy columns on shifts and two tri-states on
-    // shift_closes (RT-385).
-    expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
-    // 0051's sale_responsibilities (SELECT + INSERT policies), the two new
-    // columns, and payer_account.credit_terms dropped (RT-418).
-    expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
-    // 0054's three credit reversal tables (SELECT + INSERT policies each), the
-    // sale_voids approval-use trigger and the two FK-target indexes (RT-577).
-    expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
-    // 0055's seven AI entitlement tables (15 policies: SELECT + INSERT each,
-    // plus the counters' UPDATE), its four trigger functions and the one
-    // default-deny catalog seed row (RT-663).
-    expect(await countAiEntitlementObjects()).toEqual(["7", "15", "4", "1"]);
-    // 0056's event records (SELECT + INSERT) and tenant inventory settings
-    // (SELECT + INSERT + UPDATE) with its updated_at trigger (RT-435).
-    expect(await countPositionEventObjects()).toEqual(["2", "5", "1"]);
-    // 0057-0061's five posting-freshness indexes, valid after the runner's
-    // CONCURRENTLY builds (RT-565 D7).
-    expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES)).toBe("5");
-    // 0062's support-session table, its platform-admin policy, two guard
-    // triggers and guard function (RT-414).
-    expect(await countSupportSessionObjects()).toEqual(["1", "1", "2", "1"]);
-    // 0063's anchor tables (SELECT + INSERT policies each) and the two
-    // activation columns on tenant_inventory_settings (RT-427).
-    expect(await countAnchorObjects()).toEqual(["2", "4", "2"]);
-    // 0064-0065's two stock-movement history indexes, valid after the runner's
-    // CONCURRENTLY builds (RT-735).
-    expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
-    // 0066's widened, validated result-class CHECK (RT-428).
-    expect(await countPendingAwareClassCheck()).toBe("1");
-    // 0067's refund_executions (SELECT + INSERT policies), the four allocation
-    // / posting columns and the original-tender trigger (RT-787).
-    expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
-    // 0068's device health and version policy tables, three policies each (RT-327).
-    expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
-    // 0070's force-close table (SELECT + INSERT policies) and its two
-    // composite FK targets on shifts and devices (RT-742).
-    expect(await countShiftForcedCloseObjects()).toEqual(["1", "2", "2"]);
-    // 0071's rejection_message column and its two validated CHECKs (RT-410).
-    expect(await countRejectionMessageObjects()).toEqual(["1", "2"]);
-    // 0072's five safety tables (12 policies), the Safety TTL column and the
-    // tracking_identities UPDATE policy (RT-449).
-    expect(await countInventorySafetyObjects()).toEqual(["5", "12", "1", "3"]);
-    // 0073's four nullable build identity columns on devices (RT-719).
-    expect(await countBuildIdentityColumns()).toBe("4");
+    await expectProbeState(new Set());
   }
-
-  /** The three tables created by 0054_sale_credit_reversals (RT-577). */
-  const CREDIT_REVERSAL_TABLES = ["sale_credit_reversals", "sale_credit_reversal_tenders", "sale_approval_uses"];
 
   /** The three return tables created by 0032_sale_returns (RT-73). */
   const RETURN_TABLES = ["sale_returns", "sale_return_lines", "sale_return_tenders"];
@@ -904,7 +451,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0073 rollback (down reverses
+      // Sanity: everything older SURVIVES the head rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
@@ -1042,6 +589,9 @@ describe("data-pulse-migrate CLI", () => {
       const r = await runCli(["down"], { DATABASE_URL: env.adminUri });
       expect(r.code).toBe(0);
       expect(r.stdout).toMatch(new RegExp(`down: rolled back ${id}`));
+      // RT-812: each probed migration's own objects are gone right after its own down.
+      const probe = REGISTRY.probes.get(id);
+      if (probe) expect({ id, reading: await probe.measure(probeDb) }).toEqual({ id, reading: probe.rolledBack });
     }
 
     const empty = await runCli(["down"], { DATABASE_URL: env.adminUri });

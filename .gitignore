@@ -66,3 +66,6 @@ graphify-out/
 
 # Self-hosted GitHub Actions runner installs (local-only, not part of any slice)
 actions-runner*/
+
+# RT-812: scratch build of grant-registry.compiled.spec.ts (removed after the run)
+apps/api/.rt812-compiled-*/

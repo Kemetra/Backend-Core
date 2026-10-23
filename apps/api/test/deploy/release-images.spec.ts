@@ -7,6 +7,7 @@
 import { readFileSync } from "node:fs";
 import { posix, resolve } from "node:path";
 import * as yaml from "js-yaml";
+import { routineGrantScripts } from "../_helpers/domain-grant-scripts";
 
 const repoRoot = resolve(__dirname, "..", "..", "..", "..");
 // Normalise CRLF so checkouts with core.autocrlf behave like CI.
@@ -221,9 +222,17 @@ describe("docker-compose.prod.yml default behaviour", () => {
 describe("release bundle", () => {
   const script = read("deploy/release-bundle.sh");
 
-  function allowlist(): string[] {
+  function staticAllowlist(): string[] {
     const body = /^ALLOWLIST=\(\n([\s\S]*?)^\)/m.exec(script)?.[1] ?? "";
     return body.split("\n").map((l) => l.trim()).filter(Boolean);
+  }
+
+  /** RT-812: the routine grant scripts the bundle appends from `apply-domain-grants.sh --list`. */
+  const routineGrants = (): string[] => routineGrantScripts().map((f) => `docs/operations/sql/${f}`);
+
+  /** Everything the bundle ships: the static ALLOWLIST plus the routine grant scripts. */
+  function allowlist(): string[] {
+    return [...staticAllowlist(), ...routineGrants()];
   }
 
   function readmeDeploySql(): string[] {
@@ -233,8 +242,8 @@ describe("release bundle", () => {
     return [...deploy.matchAll(/-f (docs\/operations\/sql\/[\w-]+\.sql)/g)].flatMap((m) => m[1] ?? []);
   }
 
-  it("is exactly the compose files, Caddyfile, smoke tool, the README's SQL scripts and their includes", () => {
-    const list = allowlist();
+  it("is exactly the compose files, Caddyfile, smoke and grant tools, the README's SQL scripts and their includes", () => {
+    const list = staticAllowlist();
     const sql = list.filter((f) => f.startsWith("docs/operations/sql/"));
     const included = list.filter((f) => f.startsWith("packages/db/drizzle/"));
     expect(included.sort()).toEqual([
@@ -242,12 +251,37 @@ describe("release bundle", () => {
       "packages/db/drizzle/0043_inventory_effect_integration_backfill.sql",
     ]);
     expect(list.filter((f) => !sql.includes(f) && !included.includes(f)).sort()).toEqual(
-      ["Caddyfile", "deploy/console-smoke.sh", "docker-compose.prod.yml", "docker-compose.release.yml"].sort(),
+      [
+        "Caddyfile",
+        "deploy/apply-domain-grants.sh",
+        "deploy/console-smoke.sh",
+        "docker-compose.prod.yml",
+        "docker-compose.release.yml",
+      ].sort(),
     );
     expect(sql.sort()).toEqual([...readmeDeploySql()].sort());
-    expect(sql).toHaveLength(22);
-    expect(new Set(list).size).toBe(list.length);
-    for (const f of list) expect(f).not.toMatch(/\.env(\.|$)|secret|password/i);
+    // RT-812: no routine grant script is hand-listed; they all come from the selector.
+    expect(sql.filter((f) => f.endsWith("-domain-grants.sql"))).toEqual([]);
+    const all = allowlist();
+    expect(new Set(all).size).toBe(all.length);
+    for (const f of all) expect(f).not.toMatch(/\.env(\.|$)|secret|password/i);
+  });
+
+  it("appends the routine grant scripts from the selector README step 2 runs (RT-812)", () => {
+    expect(script).toContain('ROUTINE_GRANTS="$(bash deploy/apply-domain-grants.sh --list)" || fail');
+    expect(script).toContain('ALLOWLIST+=("${ROUTINE_GRANT_FILES[@]}")');
+    // Listed after `cd "$REPO_ROOT"`, so the selector's relative paths resolve.
+    expect(script.indexOf('cd "$REPO_ROOT"')).toBeLessThan(script.indexOf("ROUTINE_GRANTS=\"$(bash"));
+    expect(routineGrants().length).toBeGreaterThanOrEqual(16);
+  });
+
+  it("README step 2 runs the selector, not a hand-written list of grant scripts (RT-812)", () => {
+    const readme = read("deploy/README.md");
+    expect(readme).toContain("op run --env-file=deploy/grants.env -- deploy/apply-domain-grants.sh\n");
+    expect(readme).toContain("Changed in RT-812");
+    expect(readmeDeploySql().filter((f) => f.endsWith("-domain-grants.sql"))).toEqual([]);
+    // Nor does any other block (the Operations redeploy recipe included).
+    expect(readme.match(/docs\/operations\/sql\/[a-z0-9-]+-domain-grants\.sql/g) ?? []).toEqual([]);
   });
 
   it("only ships files that exist in the repo", () => {

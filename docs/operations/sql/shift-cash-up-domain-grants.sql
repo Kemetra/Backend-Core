@@ -8,8 +8,9 @@
 -- never as a URL argument, and pass the environment's DATABASE_URL role name:
 --   psql -X -v domain_role=<role> \
 --        -f docs/operations/sql/shift-cash-up-domain-grants.sql
--- deploy/README.md runs this in step 2 of every release, after
--- cashier-admissions-domain-grants.sql.
+-- deploy/apply-domain-grants.sh runs this in step 2 of every release
+-- (deploy/README.md), selected by the marker on the next line (RT-812):
+-- deploy: every-release
 -- Optionally also pass -v lookup_role=<AUTH_LOOKUP_DATABASE_URL role> to check
 -- that the lookup role holds no privilege of any kind on these tables.
 --
