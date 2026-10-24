@@ -2974,7 +2974,6 @@ components:
         - receivedAt
         - businessDate
         - sourceSystem
-        - externalId
         - mismatchFlag
         - syncStatus
         - voided
