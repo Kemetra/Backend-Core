@@ -20,7 +20,7 @@ export function diffTrees({ oasdiff = process.env.OASDIFF ?? "oasdiff", baseDir,
     `${forGlob(baseDir)}/**/*.yaml`,
     `${forGlob(headDir)}/**/*.yaml`,
   ];
-  const r = spawnSync(oasdiff, args, { encoding: "utf8" });
+  const r = spawnSync(oasdiff, args, { encoding: "utf8" }); // NOSONAR: PATH-resolved like tools/oasdiff/check.sh; CI installs a pinned, checksum-verified binary
   if (r.error) return { status: "tool-error", output: String(r.error.message) };
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
   if (r.status === 0) return { status: "ok", output };

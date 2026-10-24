@@ -23,10 +23,14 @@ import { parseYamlSubset } from "./lib/yaml-subset.mjs";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 const CONTRACTS = "packages/contracts/openapi";
+const SEVERITY_FILE = path.join(ROOT, "tools/oasdiff/severity-levels.txt");
 const REPLAY_STATUS =
   "NOT_PROVEN (no recorded outbox fixtures and no envelope/idempotency tests yet; RT-713 stays open)";
+const SKIPPED = (why) => ({ label: `SKIPPED (${why})`, ok: true });
 
-const git = (args) => execFileSync("git", args, { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 });
+// `git` comes from the runner's PATH, like oasdiff and node in tools/oasdiff/check.sh: this
+// job runs only in CI or on a developer machine, never on untrusted input.
+const git = (args) => execFileSync("git", args, { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 }); // NOSONAR
 
 function blobAt(commit, file) {
   try {
@@ -45,116 +49,124 @@ function extractSnapshot(entry, dir) {
   }
 }
 
-function runProbes(synthetic, severityFile, emptyIgnore, out) {
-  let ok = true;
-  for (const p of synthetic) {
+function runProbes(probes, ctx) {
+  let ok = probes.length > 0;
+  for (const p of probes) {
     const r = diffTrees({
       baseDir: path.join(HERE, p.snapshot),
       headDir: path.join(HERE, p.candidate),
-      severityFile,
-      ignoreFile: emptyIgnore,
+      severityFile: ctx.severityFile,
+      ignoreFile: ctx.emptyIgnore,
     });
-    const want = p.expect === "breaking" ? "breaking" : "ok";
-    const pass = r.status === want;
+    const pass = r.status === (p.expect === "breaking" ? "breaking" : "ok");
     ok &&= pass;
-    out.push(`  [${pass ? "OK" : "FAIL"}] ${p.id} (test-only): expected ${p.expect}, oasdiff said ${r.status}`);
-    if (!pass) out.push(r.output);
+    ctx.out.push(`  [${pass ? "OK" : "FAIL"}] ${p.id} (test-only): expected ${p.expect}, oasdiff said ${r.status}`);
+    if (!pass) ctx.out.push(r.output);
   }
   return ok;
 }
 
-function runSnapshots(entries, accepted, work, severityFile, out) {
+function runHarness(matrix, ctx) {
+  ctx.out.push("harness correctness (synthetic, test-only; says nothing about real clients):");
+  const ok = runProbes(matrix.synthetic_snapshots ?? [], ctx);
+  if (!ok) ctx.out.push("::error::harness probes missing or wrong: the gate cannot be trusted");
+  return { label: ok ? "PASS" : "FAIL", ok };
+}
+
+function runCompat(entries, accepted, ctx) {
+  ctx.out.push("real-snapshot oasdiff (supported POS builds/releases vs current contracts):");
   let ok = true;
-  const head = path.join(ROOT, CONTRACTS);
   for (const entry of entries) {
     const id = snapshotId(entry);
-    const dir = path.join(work, "snapshots", id);
+    const dir = path.join(ctx.work, "snapshots", id);
     extractSnapshot(entry, dir);
-    const ignoreFile = path.join(work, `${id}.ignore.txt`);
+    const ignoreFile = path.join(ctx.work, `${id}.ignore.txt`);
     writeIgnoreFile(ignoreFile, accepted.byId.get(id) ?? []);
-    const r = diffTrees({ baseDir: dir, headDir: head, severityFile, ignoreFile });
+    const r = diffTrees({ baseDir: dir, headDir: path.join(ROOT, CONTRACTS), severityFile: ctx.severityFile, ignoreFile });
     ok &&= r.status === "ok";
-    const label = { ok: "compatible", breaking: "FAIL_BREAKING", "tool-error": "FAIL_TOOL" }[r.status];
-    out.push(`  [${r.status === "ok" ? "OK" : "FAIL"}] ${id} (${entry.status}): ${label}`);
-    if (r.status !== "ok") out.push(r.output);
+    const verdict = { ok: "compatible", breaking: "FAIL_BREAKING", "tool-error": "FAIL_TOOL" }[r.status];
+    ctx.out.push(`  [${r.status === "ok" ? "OK" : "FAIL"}] ${id} (${entry.status}): ${verdict}`);
+    if (r.status !== "ok") ctx.out.push(r.output);
   }
-  return ok;
+  const n = entries.length;
+  return { label: ok ? `PASS (${n} snapshot${n === 1 ? "" : "s"})` : "FAIL", ok };
+}
+
+function loadMatrix(matrixText, out) {
+  try {
+    return parseYamlSubset(matrixText ?? readFileSync(path.join(HERE, "pos-supported.yaml"), "utf8"));
+  } catch (e) {
+    out.push(`::error::FAIL_INVALID_MATRIX: ${e.message}`);
+    return null;
+  }
+}
+
+function loadAccepted(acceptedText, matrix, out) {
+  const entries = Array.isArray(matrix.supported) ? matrix.supported : [];
+  const ids = entries.map((e) => (e && typeof e === "object" ? snapshotId(e) : ""));
+  const accepted = parseAcceptedBreaks(acceptedText ?? readFileSync(path.join(HERE, "accepted-breaks.txt"), "utf8"), ids);
+  accepted.problems.forEach((p) => out.push(`::error::${p}`));
+  return accepted;
+}
+
+function announce(result, out) {
+  out.push(`matrix state: ${result.state}`);
+  result.warnings.forEach((w) => out.push(`::warning::${w}`));
+  result.problems.forEach((p) => out.push(`::error::${result.state}: ${p}`));
+}
+
+function summarize({ out, result, accepted, harness, compat, mode }) {
+  const failed = result.state.startsWith("FAIL_") || accepted.problems.length > 0 || !harness.ok || !compat.ok;
+  const notGreen = !failed && mode === "release";
+  if (notGreen) out.push("::error::release mode: envelope/replay status is NOT_PROVEN, so the release gate is not green");
+  out.push(
+    "",
+    `harness correctness : ${harness.label}`,
+    `real-snapshot oasdiff: ${compat.label}`,
+    `envelope/replay      : ${REPLAY_STATUS}`,
+    `compatibility verdict: ${failed ? "FAIL" : "NOT_VERIFIED (never VERIFIED until envelope/replay are proven)"}`,
+  );
+  return { exit: failed || notGreen ? 1 : 0, lines: out };
 }
 
 /** @returns { exit: number, lines: string[] } */
 export function run({ mode = "pr", now = new Date(), matrixText, acceptedText } = {}) {
   const out = [];
-  const fail = (m) => out.push(`::error::${m}`);
-  const severityFile = path.join(ROOT, "tools/oasdiff/severity-levels.txt");
-  let matrix;
-  try {
-    matrix = parseYamlSubset(matrixText ?? readFileSync(path.join(HERE, "pos-supported.yaml"), "utf8"));
-  } catch (e) {
-    fail(`FAIL_INVALID_MATRIX: ${e.message}`);
-    return { exit: 1, lines: out };
-  }
+  const matrix = loadMatrix(matrixText, out);
+  if (!matrix) return { exit: 1, lines: out };
   const result = evaluateMatrix(matrix, { blobAt, now, mode });
-  out.push(`matrix state: ${result.state}`);
-  result.warnings.forEach((w) => out.push(`::warning::${w}`));
-  result.problems.forEach((p) => fail(`${result.state}: ${p}`));
-  let failed = result.state.startsWith("FAIL_");
-
-  const ids = result.supported.map(snapshotId);
-  const accepted = parseAcceptedBreaks(
-    acceptedText ?? readFileSync(path.join(HERE, "accepted-breaks.txt"), "utf8"),
-    (Array.isArray(matrix.supported) ? matrix.supported : []).map((e) => (e && typeof e === "object" ? snapshotId(e) : "")),
-  );
-  accepted.problems.forEach((p) => fail(p));
-  failed ||= accepted.problems.length > 0;
+  announce(result, out);
+  const accepted = loadAccepted(acceptedText, matrix, out);
 
   const work = mkdtempSync(path.join(tmpdir(), "contracts-compat-"));
   try {
-    let harness = "SKIPPED (matrix invalid)";
-    if (result.state !== "FAIL_INVALID_MATRIX") {
-      const empty = path.join(work, "empty.ignore.txt");
-      writeIgnoreFile(empty, []);
-      out.push("harness correctness (synthetic, test-only; says nothing about real clients):");
-      const probes = matrix.synthetic_snapshots ?? [];
-      const harnessOk = probes.length > 0 && runProbes(probes, severityFile, empty, out);
-      harness = harnessOk ? "PASS" : "FAIL";
-      if (!harnessOk) fail("harness probes missing or wrong: the gate cannot be trusted");
-      failed ||= !harnessOk;
-    }
-    let compat = `SKIPPED (${result.state})`;
-    if (result.state === "READY") {
-      out.push("real-snapshot oasdiff (supported POS builds/releases vs current contracts):");
-      const snapshotsOk = runSnapshots(result.supported, accepted, work, severityFile, out);
-      compat = snapshotsOk ? `PASS (${ids.length} snapshot${ids.length === 1 ? "" : "s"})` : "FAIL";
-      failed ||= !snapshotsOk;
-    }
-    const notGreen = !failed && mode === "release";
-    if (notGreen) fail("release mode: envelope/replay status is NOT_PROVEN, so the release gate is not green");
-    out.push(
-      "",
-      `harness correctness : ${harness}`,
-      `real-snapshot oasdiff: ${compat}`,
-      `envelope/replay      : ${REPLAY_STATUS}`,
-      `compatibility verdict: ${failed ? "FAIL" : "NOT_VERIFIED (never VERIFIED until envelope/replay are proven)"}`,
-    );
-    return { exit: failed || notGreen ? 1 : 0, lines: out };
+    const emptyIgnore = path.join(work, "empty.ignore.txt");
+    writeIgnoreFile(emptyIgnore, []);
+    const ctx = { out, work, severityFile: SEVERITY_FILE, emptyIgnore };
+    const harness = result.state === "FAIL_INVALID_MATRIX" ? SKIPPED("matrix invalid") : runHarness(matrix, ctx);
+    const compat = result.state === "READY" ? runCompat(result.supported, accepted, ctx) : SKIPPED(result.state);
+    return summarize({ out, result, accepted, harness, compat, mode });
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
 }
 
-function main(argv) {
+function parseArgs(argv) {
   const get = (flag) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
   const mode = get("--mode") ?? "pr";
-  if (!["pr", "release"].includes(mode)) {
-    console.error(`::error::unknown --mode '${mode}' (expected pr or release)`);
-    return 1;
-  }
   const now = get("--now") ? new Date(get("--now")) : new Date();
-  if (Number.isNaN(now.getTime())) {
-    console.error("::error::--now is not a valid timestamp");
+  if (!["pr", "release"].includes(mode)) return { error: `unknown --mode '${mode}' (expected pr or release)` };
+  if (Number.isNaN(now.getTime())) return { error: "--now is not a valid timestamp" };
+  return { mode, now };
+}
+
+function main(argv) {
+  const args = parseArgs(argv);
+  if (args.error) {
+    console.error(`::error::${args.error}`);
     return 1;
   }
-  const { exit, lines } = run({ mode, now });
+  const { exit, lines } = run(args);
   console.log(lines.join("\n"));
   if (process.env.GITHUB_STEP_SUMMARY) {
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### POS compatibility (RT-713)\n\n\`\`\`\n${lines.join("\n")}\n\`\`\`\n`);

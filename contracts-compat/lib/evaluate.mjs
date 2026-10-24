@@ -15,18 +15,49 @@ export const SCHEMA = "retail-tower/pos-compat@1";
 export const KINDS = ["build", "release"];
 export const FRESHNESS_DAYS = 7; // owner decision O-3 (RT-709 comment 12808)
 
-const TOP_KEYS = ["schema", "fleet_baseline", "supported", "bootstrap_exception", "synthetic_snapshots"];
-const BASELINE_KEYS = ["source", "captured_at", "evidence", "installed"];
-const SUPPORTED_KEYS = [
-  "kind", "build_id", "pos_version", "release_tag", "device_label", "pos_pin",
-  "contract_ref", "snapshot_sha256", "status", "added_by",
-];
-const EXCEPTION_KEYS = ["approved_by", "approved_at", "jira", "residual_risk", "expires_when"];
 const SHA1 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+const SAFE_PATH = /^(?![/\\])(?!.*\.\.)[^\0\\]+$/;
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const nonEmpty = (v) => typeof v === "string" && v.trim() !== "";
+const matches = (re) => (v) => typeof v === "string" && re.test(v);
+const isSha1 = matches(SHA1);
+const isSha256 = matches(SHA256);
+const isSafePath = matches(SAFE_PATH);
+const oneOf = (list) => (v) => list.includes(v);
+const isTimestamp = (v) => nonEmpty(v) && !Number.isNaN(Date.parse(v));
+
+// Per-object field rules: key -> predicate. Unknown keys are rejected separately.
+const BASELINE_SPEC = { source: nonEmpty, captured_at: isTimestamp, evidence: nonEmpty, installed: Array.isArray };
+const KIND_SPEC = {
+  installed: { build: { build_id: nonEmpty }, release: { pos_version: nonEmpty } },
+  supported: { build: { build_id: isSha1 }, release: { pos_version: nonEmpty, release_tag: nonEmpty } },
+};
+const SUPPORTED_COMMON = {
+  status: oneOf(["supported", "deprecated"]),
+  added_by: nonEmpty,
+  snapshot_sha256: isSha256,
+};
+const REF_SPEC = { commit: isSha1, root: nonEmpty };
+const FILE_SPEC = { path: isSafePath, blob: isSha1 };
+const EXCEPTION_FIELDS = ["approved_by", "approved_at", "jira", "residual_risk", "expires_when"];
+const EXCEPTION_SPEC = Object.fromEntries(EXCEPTION_FIELDS.map((k) => [k, nonEmpty]));
+const SYNTHETIC_SPEC = {
+  id: nonEmpty,
+  snapshot: nonEmpty,
+  candidate: nonEmpty,
+  label: oneOf(["test-only"]),
+  expect: oneOf(["breaking", "compatible"]),
+};
+const KEYS = {
+  top: ["schema", "fleet_baseline", "supported", "bootstrap_exception", "synthetic_snapshots"],
+  baseline: Object.keys(BASELINE_SPEC),
+  installed: ["kind", "build_id", "pos_version"],
+  supported: ["kind", "build_id", "pos_version", "release_tag", "device_label", "pos_pin", "contract_ref", ...Object.keys(SUPPORTED_COMMON)],
+  exception: EXCEPTION_FIELDS,
+  synthetic: Object.keys(SYNTHETIC_SPEC),
+};
 
 /** sha256 over the sorted `<blob>  <path>` lines of a snapshot's file list. */
 export function snapshotDigest(files) {
@@ -41,72 +72,76 @@ export const snapshotId = (entry) =>
 
 const identityOf = (e) => `${e.kind}:${e.kind === "build" ? e.build_id : e.pos_version}`;
 
-function unknownKeys(obj, allowed, where, problems) {
+// ---- structural validation: tiny helpers, each pushes into `problems` -------------------------
+
+const badFields = (obj, spec) =>
+  Object.keys(spec).filter((k) => !(isObj(obj) && spec[k](obj[k])));
+
+function checkShape(obj, spec, where, problems) {
+  const bad = badFields(obj, spec);
+  if (bad.length > 0) problems.push(`${where}: missing or invalid ${bad.join(", ")}`);
+}
+
+function checkKeys(obj, allowed, where, problems) {
   for (const k of Object.keys(obj)) {
     if (!allowed.includes(k)) problems.push(`${where}: unknown key '${k}'`);
   }
 }
 
-function checkInstalledEntry(e, i, problems) {
-  const where = `fleet_baseline.installed[${i}]`;
-  if (!isObj(e) || !KINDS.includes(e.kind)) {
-    problems.push(`${where}: unknown kind '${isObj(e) ? e.kind : e}' (expected ${KINDS.join("|")})`);
-  } else if (e.kind === "build" ? !nonEmpty(e.build_id) : !nonEmpty(e.pos_version)) {
-    problems.push(`${where}: ${e.kind === "build" ? "build_id" : "pos_version"} is required`);
-  }
+function checkKind(e, where, specs, problems) {
+  if (isObj(e) && Object.hasOwn(specs, e.kind)) return true;
+  problems.push(`${where}: unknown kind '${isObj(e) ? e.kind : e}' (expected ${KINDS.join("|")})`);
+  return false;
 }
 
-function checkSupportedEntry(e, i, problems) {
-  const where = `supported[${i}]`;
-  if (!isObj(e)) return problems.push(`${where}: must be a mapping`);
-  unknownKeys(e, SUPPORTED_KEYS, where, problems);
-  if (!KINDS.includes(e.kind)) {
-    return problems.push(`${where}: unknown kind '${e.kind}' (expected ${KINDS.join("|")})`);
-  }
-  if (e.kind === "build" && !SHA1.test(e.build_id ?? "")) {
-    problems.push(`${where}: build_id must be a full 40-hex POS commit SHA`);
-  }
-  if (e.kind === "release" && (!nonEmpty(e.pos_version) || !nonEmpty(e.release_tag))) {
-    problems.push(`${where}: release entries need pos_version and release_tag`);
-  }
-  if (!["supported", "deprecated"].includes(e.status)) {
-    problems.push(`${where}: status must be supported|deprecated`);
-  }
-  if (!nonEmpty(e.added_by)) problems.push(`${where}: added_by is required`);
-  const ref = e.contract_ref;
-  if (!isObj(ref) || !SHA1.test(ref.commit ?? "") || !nonEmpty(ref.root)) {
-    return problems.push(`${where}: contract_ref needs a 40-hex commit and a root`);
-  }
-  if (!Array.isArray(ref.files) || ref.files.length === 0) {
-    return problems.push(`${where}: contract_ref.files must list at least one path/blob`);
-  }
-  const seen = new Set();
-  ref.files.forEach((f, j) => {
-    if (!isObj(f) || !nonEmpty(f.path) || !SHA1.test(f.blob ?? "")) {
-      problems.push(`${where}: contract_ref.files[${j}] needs path and a 40-hex blob`);
-    } else if (f.path.includes("..") || f.path.startsWith("/") || seen.has(f.path)) {
-      problems.push(`${where}: contract_ref.files[${j}] path '${f.path}' is unsafe or duplicated`);
-    } else {
-      seen.add(f.path);
-    }
+function checkInstalled(list, problems) {
+  list.forEach((e, i) => {
+    const where = `fleet_baseline.installed[${i}]`;
+    if (!checkKind(e, where, KIND_SPEC.installed, problems)) return;
+    checkKeys(e, KEYS.installed, where, problems);
+    checkShape(e, KIND_SPEC.installed[e.kind], where, problems);
   });
-  if (!SHA256.test(e.snapshot_sha256 ?? "")) problems.push(`${where}: snapshot_sha256 must be 64 hex`);
+}
+
+function checkBaseline(fb, problems) {
+  if (!isObj(fb)) return problems.push("fleet_baseline is required");
+  checkKeys(fb, KEYS.baseline, "fleet_baseline", problems);
+  checkShape(fb, BASELINE_SPEC, "fleet_baseline", problems);
+  if (Array.isArray(fb.installed)) checkInstalled(fb.installed, problems);
+}
+
+function checkContractRef(ref, where, problems) {
+  checkShape(ref, REF_SPEC, `${where}.contract_ref`, problems);
+  const files = isObj(ref) ? ref.files : undefined;
+  if (!Array.isArray(files) || files.length === 0) {
+    return problems.push(`${where}.contract_ref.files must list at least one path/blob`);
+  }
+  files.forEach((f, j) => checkShape(f, FILE_SPEC, `${where}.contract_ref.files[${j}]`, problems));
+  const paths = files.map((f) => f?.path);
+  if (new Set(paths).size !== paths.length) problems.push(`${where}.contract_ref.files has duplicate paths`);
+}
+
+function checkSupported(list, problems) {
+  if (!Array.isArray(list)) return problems.push("supported must be a list");
+  list.forEach((e, i) => {
+    const where = `supported[${i}]`;
+    if (!checkKind(e, where, KIND_SPEC.supported, problems)) return;
+    checkKeys(e, KEYS.supported, where, problems);
+    checkShape(e, { ...KIND_SPEC.supported[e.kind], ...SUPPORTED_COMMON }, where, problems);
+    checkContractRef(e.contract_ref, where, problems);
+  });
 }
 
 function checkException(ex, installedCount, problems) {
   if (ex === undefined) return;
   if (!isObj(ex)) return problems.push("bootstrap_exception: must be a mapping");
-  unknownKeys(ex, EXCEPTION_KEYS, "bootstrap_exception", problems);
-  for (const k of EXCEPTION_KEYS) {
-    if (!nonEmpty(ex[k])) problems.push(`bootstrap_exception.${k} is required`);
-  }
+  checkKeys(ex, KEYS.exception, "bootstrap_exception", problems);
+  checkShape(ex, EXCEPTION_SPEC, "bootstrap_exception", problems);
   // The exception only covers "nothing installed"; it is void once anything is.
   if (installedCount > 0) {
     problems.push("bootstrap_exception is invalid while fleet_baseline.installed is non-empty");
   }
 }
-
-const SYNTHETIC_KEYS = ["id", "snapshot", "candidate", "label", "expect"];
 
 // Synthetic probes prove the harness, never real-client compatibility: they must say so.
 function checkSynthetic(list, problems) {
@@ -115,59 +150,66 @@ function checkSynthetic(list, problems) {
   list.forEach((s, i) => {
     const where = `synthetic_snapshots[${i}]`;
     if (!isObj(s)) return problems.push(`${where}: must be a mapping`);
-    unknownKeys(s, SYNTHETIC_KEYS, where, problems);
-    for (const k of ["id", "snapshot", "candidate"]) {
-      if (!nonEmpty(s[k])) problems.push(`${where}.${k} is required`);
-    }
-    if (s.label !== "test-only") problems.push(`${where}.label must be 'test-only'`);
-    if (!["breaking", "compatible"].includes(s.expect)) {
-      problems.push(`${where}.expect must be breaking|compatible`);
-    }
+    checkKeys(s, KEYS.synthetic, where, problems);
+    checkShape(s, SYNTHETIC_SPEC, where, problems);
   });
 }
 
 export function validateStructure(matrix) {
-  const problems = [];
   if (!isObj(matrix)) return ["matrix must be a mapping"];
-  unknownKeys(matrix, TOP_KEYS, "top level", problems);
+  const problems = [];
+  checkKeys(matrix, KEYS.top, "top level", problems);
   if (matrix.schema !== SCHEMA) problems.push(`schema must be '${SCHEMA}', got '${matrix.schema}'`);
-  const fb = matrix.fleet_baseline;
-  if (!isObj(fb)) {
-    problems.push("fleet_baseline is required");
-  } else {
-    unknownKeys(fb, BASELINE_KEYS, "fleet_baseline", problems);
-    for (const k of ["source", "captured_at", "evidence"]) {
-      if (!nonEmpty(fb[k])) problems.push(`fleet_baseline.${k} is required`);
-    }
-    if (nonEmpty(fb.captured_at) && Number.isNaN(Date.parse(fb.captured_at))) {
-      problems.push("fleet_baseline.captured_at is not a valid timestamp");
-    }
-    if (Array.isArray(fb.installed)) fb.installed.forEach((e, i) => checkInstalledEntry(e, i, problems));
-    else problems.push("fleet_baseline.installed must be a list (use [] when nothing is installed)");
-  }
-  if (Array.isArray(matrix.supported)) matrix.supported.forEach((e, i) => checkSupportedEntry(e, i, problems));
-  else problems.push("supported must be a list");
-  checkException(matrix.bootstrap_exception, Array.isArray(fb?.installed) ? fb.installed.length : 0, problems);
-  checkSynthetic(matrix.synthetic_snapshots, problems);
+  checkSections(matrix, problems);
   return problems;
 }
+
+function checkSections(matrix, problems) {
+  const fb = matrix.fleet_baseline;
+  checkBaseline(fb, problems);
+  checkSupported(matrix.supported, problems);
+  const installedCount = Array.isArray(fb?.installed) ? fb.installed.length : 0;
+  checkException(matrix.bootstrap_exception, installedCount, problems);
+  checkSynthetic(matrix.synthetic_snapshots, problems);
+}
+
+// ---- evaluation --------------------------------------------------------------------------------
 
 /** Re-derive the digest and compare every listed blob with git history. */
 function verifySnapshot(entry, blobAt) {
   const problems = [];
   const { commit, root, files } = entry.contract_ref;
+  const id = snapshotId(entry);
   if (snapshotDigest(files) !== entry.snapshot_sha256) {
-    problems.push(`${snapshotId(entry)}: snapshot_sha256 does not match the listed path/blob pairs`);
+    problems.push(`${id}: snapshot_sha256 does not match the listed path/blob pairs`);
   }
   for (const f of files) {
     const actual = blobAt(commit, `${root}/${f.path}`);
-    if (actual === null) {
-      problems.push(`${snapshotId(entry)}: ${root}/${f.path} not found at ${commit}`);
-    } else if (actual !== f.blob) {
-      problems.push(`${snapshotId(entry)}: ${f.path} is blob ${actual} at ${commit}, matrix lists ${f.blob}`);
-    }
+    if (actual === null) problems.push(`${id}: ${root}/${f.path} not found at ${commit}`);
+    else if (actual !== f.blob) problems.push(`${id}: ${f.path} is blob ${actual} at ${commit}, matrix lists ${f.blob}`);
   }
   return problems;
+}
+
+function nothingInstalled(matrix) {
+  if (matrix.bootstrap_exception === undefined) {
+    const problems = ["no installed POS build or release recorded and no owner-approved bootstrap_exception"];
+    return { state: "FAIL_MISSING_SNAPSHOT", problems, warnings: [], supported: [] };
+  }
+  return { state: "NOT_PROVEN_NO_SUPPORTED_RELEASE_SNAPSHOT", problems: [], warnings: [], supported: [] };
+}
+
+function uncoveredInstalled(matrix) {
+  const have = new Set(matrix.supported.map(identityOf));
+  return matrix.fleet_baseline.installed
+    .filter((inst) => !have.has(identityOf(inst)))
+    .map((inst) => `installed ${identityOf(inst)} has no entry in supported`);
+}
+
+function staleness(matrix, now) {
+  const ageDays = (now.getTime() - Date.parse(matrix.fleet_baseline.captured_at)) / 86_400_000;
+  if (ageDays <= FRESHNESS_DAYS) return null;
+  return `FAIL_STALE_FLEET: fleet_baseline.captured_at is ${ageDays.toFixed(1)} days old (limit ${FRESHNESS_DAYS})`;
 }
 
 /**
@@ -176,51 +218,38 @@ function verifySnapshot(entry, blobAt) {
  * @returns { state, problems, warnings, supported }  supported = entries to diff when READY
  */
 export function evaluateMatrix(matrix, { blobAt, now, mode = "pr" }) {
-  const problems = validateStructure(matrix);
+  const invalid = validateStructure(matrix);
+  if (invalid.length > 0) return { state: "FAIL_INVALID_MATRIX", problems: invalid, warnings: [], supported: [] };
+  if (matrix.fleet_baseline.installed.length === 0) return nothingInstalled(matrix);
+
+  const problems = [
+    ...uncoveredInstalled(matrix),
+    ...matrix.supported.flatMap((e) => verifySnapshot(e, blobAt)),
+  ];
   const warnings = [];
-  if (problems.length > 0) return { state: "FAIL_INVALID_MATRIX", problems, warnings, supported: [] };
-
-  const installed = matrix.fleet_baseline.installed;
-  if (installed.length === 0) {
-    return matrix.bootstrap_exception === undefined
-      ? {
-          state: "FAIL_MISSING_SNAPSHOT",
-          problems: ["no installed POS build or release recorded and no owner-approved bootstrap_exception"],
-          warnings,
-          supported: [],
-        }
-      : { state: "NOT_PROVEN_NO_SUPPORTED_RELEASE_SNAPSHOT", problems, warnings, supported: [] };
-  }
-
-  const have = new Map(matrix.supported.map((e) => [identityOf(e), e]));
-  for (const inst of installed) {
-    if (!have.has(identityOf(inst))) {
-      problems.push(`installed ${identityOf(inst)} has no entry in supported`);
-    }
-  }
-  for (const entry of matrix.supported) problems.push(...verifySnapshot(entry, blobAt));
-
-  const ageDays = (now.getTime() - Date.parse(matrix.fleet_baseline.captured_at)) / 86_400_000;
-  if (ageDays > FRESHNESS_DAYS) {
-    const msg = `FAIL_STALE_FLEET: fleet_baseline.captured_at is ${ageDays.toFixed(1)} days old (limit ${FRESHNESS_DAYS})`;
-    (mode === "release" ? problems : warnings).push(msg);
-  }
-  return {
-    state: problems.length > 0 ? "FAIL_MISSING_SNAPSHOT" : "READY",
-    problems,
-    warnings,
-    supported: matrix.supported,
-  };
+  const stale = staleness(matrix, now);
+  if (stale) (mode === "release" ? problems : warnings).push(stale);
+  const state = problems.length > 0 ? "FAIL_MISSING_SNAPSHOT" : "READY";
+  return { state, problems, warnings, supported: matrix.supported };
 }
 
-const ACCEPTED_TAG = /\bRT-\d+\b/;
+// ---- accepted breaks -----------------------------------------------------------------------------
+
+const JIRA_KEY = /\bRT-\d+\b/;
 const CONSUMER_TAG = /\bconsumer:[A-Za-z0-9_-]+\b/;
+
+function acceptedProblem(id, body, knownIds) {
+  if (!knownIds.includes(id)) return `unknown snapshot id '${id}'`;
+  if (!JIRA_KEY.test(body)) return "missing a Jira key (RT-<n>)";
+  if (!CONSUMER_TAG.test(body)) return "missing a consumer:<NAME> tag";
+  return null;
+}
 
 /**
  * Persistent accepted breaks, one line per finding: `<snapshot-id> <reason with RT-n and
  * consumer:NAME>: <oasdiff singleline finding>`. Unlike tools/oasdiff/breaking-ignore.txt
  * they do not expire with the PR: a snapshot is fixed, so a break accepted against it stays
- * true for every later PR until the snapshot is dropped from the matrix.
+ * true for every later PR until the snapshot is dropped.
  * @returns { byId: Map<string,string[]>, problems: string[] }
  */
 export function parseAcceptedBreaks(text, knownIds) {
@@ -230,10 +259,8 @@ export function parseAcceptedBreaks(text, knownIds) {
     const line = raw.trim();
     if (line === "" || line.startsWith("#")) return;
     const [id, ...rest] = line.split(/\s+/);
-    const body = rest.join(" ");
-    if (!knownIds.includes(id)) problems.push(`accepted-breaks.txt:${i + 1}: unknown snapshot id '${id}'`);
-    else if (!ACCEPTED_TAG.test(body)) problems.push(`accepted-breaks.txt:${i + 1}: missing a Jira key (RT-<n>)`);
-    else if (!CONSUMER_TAG.test(body)) problems.push(`accepted-breaks.txt:${i + 1}: missing a consumer:<NAME> tag`);
+    const problem = acceptedProblem(id, rest.join(" "), knownIds);
+    if (problem) problems.push(`accepted-breaks.txt:${i + 1}: ${problem}`);
     else byId.set(id, [...(byId.get(id) ?? []), line]);
   });
   return { byId, problems };

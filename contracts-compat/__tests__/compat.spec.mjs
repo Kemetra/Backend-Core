@@ -178,16 +178,17 @@ test("introduced breaking change turns the diff red; compatible one passes", nee
     writeIgnoreFile(ignoreFile, []);
     const base = path.join(COMPAT, "synthetic/base");
     const broke = diffTrees({ baseDir: base, headDir: path.join(COMPAT, "synthetic/breaking-01"), severityFile: SEVERITY, ignoreFile });
-    assert.equal(broke.status, "breaking");
+    assert.equal(broke.status, "breaking", broke.output);
     const fine = diffTrees({ baseDir: base, headDir: path.join(COMPAT, "synthetic/compatible-01"), severityFile: SEVERITY, ignoreFile });
-    assert.equal(fine.status, "ok");
+    assert.equal(fine.status, "ok", fine.output);
 
-    // An accepted break (persistent, keyed by snapshot) is honoured; one finding at a time.
-    const findings = broke.output.split("\n").filter((l) => /^(error|warning)/i.test(l) || l.includes("probe"));
-    assert.ok(findings.length > 0);
+    // An accepted break (persistent, keyed by snapshot) is honoured. Like real entries, the
+    // finding text starts at `in API ...`, without the machine-specific file path.
+    const findings = [...broke.output.matchAll(/in API.*/g)].map((m) => m[0].trim());
+    assert.ok(findings.length > 0, broke.output);
     writeIgnoreFile(ignoreFile, findings.map((f) => `synth RT-1 consumer:none intentional: ${f}`));
     const accepted = diffTrees({ baseDir: base, headDir: path.join(COMPAT, "synthetic/breaking-01"), severityFile: SEVERITY, ignoreFile });
-    assert.equal(accepted.status, "ok");
+    assert.equal(accepted.status, "ok", accepted.output);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
