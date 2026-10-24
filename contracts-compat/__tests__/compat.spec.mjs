@@ -160,6 +160,14 @@ test("supported entry without a pos_pin, or with a pin on another BC commit, is 
   assert.match(r.problems.join(" | "), /pos_pin.bc_commit must equal/);
 });
 
+test("a non-.yaml contract path is rejected: oasdiff would skip it silently", () => {
+  for (const bad of ["catalog/read-down.yml", "catalog/read-down.json"]) {
+    const m = fresh();
+    m.supported[0].contract_ref.files[0].path = bad;
+    assert.equal(evaluate(m).state, "FAIL_INVALID_MATRIX", bad);
+  }
+});
+
 test("a future fleet capture time is a problem, not a fresh baseline", () => {
   const early = new Date("2026-10-23T00:00:00Z"); // a day before the capture
   for (const mode of ["pr", "release"]) {

@@ -17,7 +17,8 @@ export const FRESHNESS_DAYS = 7; // owner decision O-3 (RT-709 comment 12808)
 
 const SHA1 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
-const SAFE_PATH = /^(?![/\\])(?!.*\.\.)[^\0\\]+$/;
+// Only *.yaml: oasdiff is given `**/*.yaml`, so any other extension would be silently skipped.
+const SAFE_PATH = /^(?![/\\])(?!.*\.\.)[^\0\\]+[.]yaml$/;
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const nonEmpty = (v) => typeof v === "string" && v.trim() !== "";
