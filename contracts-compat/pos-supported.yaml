@@ -58,3 +58,36 @@ synthetic_snapshots:
     candidate: synthetic/compatible-01
     label: test-only
     expect: compatible
+# Test-only probes for the idempotency/replay rules: each applies one named regression to the
+# synthetic snapshot (lib/mutations.mjs) and must make the rules fail; `none` must pass.
+synthetic_semantics:
+  - id: synth-idem-ok
+    snapshot: synthetic/idem
+    fixture: synthetic/replay/idem.yaml
+    mutation: none
+    label: test-only
+    expect: pass
+  - id: synth-idem-drop-x-idempotency
+    snapshot: synthetic/idem
+    fixture: synthetic/replay/idem.yaml
+    mutation: drop_x_idempotency
+    label: test-only
+    expect: fail
+  - id: synth-idem-optional-key-header
+    snapshot: synthetic/idem
+    fixture: synthetic/replay/idem.yaml
+    mutation: optional_key_header
+    label: test-only
+    expect: fail
+  - id: synth-idem-drop-409
+    snapshot: synthetic/idem
+    fixture: synthetic/replay/idem.yaml
+    mutation: drop_409
+    label: test-only
+    expect: fail
+  - id: synth-idem-stricter-body
+    snapshot: synthetic/idem
+    fixture: synthetic/replay/idem.yaml
+    mutation: stricter_body
+    label: test-only
+    expect: fail

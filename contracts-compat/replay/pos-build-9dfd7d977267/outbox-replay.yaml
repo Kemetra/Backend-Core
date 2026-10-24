@@ -1,0 +1,37 @@
+# Contract-level replay fixture for POS build 9dfd7d97 (RT-713, RT-709 §C.2).
+# PROVENANCE: contract-derived. These bodies were authored from the build's pinned contract
+# (packages/contracts/openapi at BC 1711813d) and validated against it; they are NOT recordings
+# from the lab terminal (the POS persists sale ids in its outbox and builds wire payloads at drain
+# time, so there is no stored payload to record). All ids and amounts are synthetic, no PII.
+# A `recorded` fixture is still required for release mode.
+schema: retail-tower/pos-replay@1
+snapshot: pos-build-9dfd7d977267
+provenance: contract-derived
+recorded_from: n/a (derived from the pinned contract; synthetic ids)
+events:
+  - seq: 1
+    operation: POST /api/pos/v1/sales/{saleRef}/void
+    idempotency_key: pos-pulse-void:fixture-0000-0001
+    body_ref: bodies/void-early.json
+    expect_status: 404
+  - seq: 2
+    operation: POST /api/pos/v1/sales
+    idempotency_key: pos-pulse:fixture-0000-0001
+    body_ref: bodies/capture-sale.json
+    expect_status: 201
+  - seq: 3
+    operation: POST /api/pos/v1/sales
+    idempotency_key: pos-pulse:fixture-0000-0001
+    body_ref: bodies/capture-sale.json
+    duplicate_of: 2
+    expect_status: 201
+  - seq: 4
+    operation: POST /api/pos/v1/sales
+    idempotency_key: pos-pulse:fixture-0000-0001
+    body_ref: bodies/capture-sale-changed.json
+    expect_status: 409
+  - seq: 5
+    operation: POST /api/pos/v1/sales/{saleRef}/void
+    idempotency_key: pos-pulse-void:fixture-0000-0002
+    body_ref: bodies/void.json
+    expect_status: 201
