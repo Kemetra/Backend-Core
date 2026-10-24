@@ -17,6 +17,10 @@
 #                     Release gates require it by name too (release-images.yml,
 #                     deploy/lab/verify-release.cjs).
 #   oasdiff         : OpenAPI breaking-change gate (RT-52). Every PR, any tier.
+#   contracts-compat: POS compatibility matrix (RT-713, gate G4). oasdiff from every
+#                     supported POS contract snapshot (contracts-compat/pos-supported.yaml)
+#                     to the current contracts. Every PR and push, any tier. Reports
+#                     envelope/replay as NOT_PROVEN, never VERIFIED.
 #   schemathesis    : API fuzz over the cookieAuth surface (RT-59). PRs that are
 #                     High, or Medium outside apps/worker/. Nightly full run on
 #                     main: api-fuzz.yml. Four parallel schemathesis-shard jobs
@@ -378,6 +382,44 @@ jobs:
           echo "Comparing against merge-base $base"
           bash tools/oasdiff/check.sh "$base"
 
+  # POS compatibility matrix (RT-713, RT-707 gate G4). Re-reads each supported POS
+  # build's pinned contract snapshot from git history (commit + blob, verified) and runs
+  # oasdiff (composed, --fail-on WARN) from it to the current packages/contracts/openapi.
+  # No install, DB or Docker. Unlike `oasdiff` it needs no merge-base, so it also runs on
+  # push to main and `ci` requires it on every event. See contracts-compat/README.md.
+  contracts-compat:
+    name: contracts-compat (POS supported snapshots)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      OASDIFF_VERSION: "1.32.1"
+      # sha256 of oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz from the release checksums.txt
+      OASDIFF_SHA256: "7c8939fc49b75ee11fec66a5b83b37a2fca6aee109fed85013b1ba2ac2a1ee7f"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install oasdiff (pinned, checksum-verified)
+        run: |
+          archive="oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/$archive"             "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/$archive"
+          echo "${OASDIFF_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/oasdiff"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/oasdiff" oasdiff
+          echo "$RUNNER_TEMP/oasdiff" >> "$GITHUB_PATH"
+
+      - name: contracts-compat spec
+        env:
+          CONTRACTS_COMPAT_REQUIRE_OASDIFF: "1"
+        run: node --test contracts-compat/__tests__/compat.spec.mjs
+
+      - name: Check POS supported snapshots
+        run: |
+          oasdiff --version
+          node contracts-compat/check.mjs --mode pr
+
   # Moved here from api-fuzz.yml (RT-582) so `ci` can depend on it; sharded 4 ways
   # by RT-809. Every shard boots its own ephemeral Backend-Core stack on its own
   # runner (fresh Postgres + Redis, documented DB roles, throwaway owner and
@@ -518,7 +560,7 @@ jobs:
   # cannot waive it; the other jobs are required unless `changes` said 'false'.
   ci:
     name: ci
-    needs: [changes, fast, db-integration, db-package, oasdiff, schemathesis]
+    needs: [changes, fast, db-integration, db-package, oasdiff, contracts-compat, schemathesis]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -535,12 +577,13 @@ jobs:
           DB: ${{ needs.db-integration.result }}
           DB_PACKAGE: ${{ needs.db-package.result }}
           OASDIFF: ${{ needs.oasdiff.result }}
+          CONTRACTS_COMPAT: ${{ needs.contracts-compat.result }}
           SCHEMATHESIS: ${{ needs.schemathesis.result }}
         run: |
           set -u
           echo "event=$EVENT changes=$CHANGES tier=$TIER"
           echo "run_fast=$RUN_FAST run_db=$RUN_DB run_schemathesis=$RUN_SCHEMATHESIS"
-          echo "fast=$FAST db-integration=$DB db-package=$DB_PACKAGE oasdiff=$OASDIFF schemathesis=$SCHEMATHESIS"
+          echo "fast=$FAST db-integration=$DB db-package=$DB_PACKAGE oasdiff=$OASDIFF contracts-compat=$CONTRACTS_COMPAT schemathesis=$SCHEMATHESIS"
           failed=0
           err() { echo "::error::$*"; failed=1; }
 
@@ -570,5 +613,7 @@ jobs:
           check db-integration "$([ "$RUN_DB" != "false" ] && echo true || echo false)" "$DB"
           check db-package "$([ "$RUN_DB" != "false" ] && echo true || echo false)" "$DB_PACKAGE"
           check oasdiff "$pr" "$OASDIFF"
+          # Required on every event (push to main included): a skipped run is a failure.
+          check contracts-compat true "$CONTRACTS_COMPAT"
           check schemathesis "$want_schemathesis" "$SCHEMATHESIS"
           exit "$failed"

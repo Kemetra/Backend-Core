@@ -1,0 +1,59 @@
+# POS compatibility matrix (RT-713, schema retail-tower/pos-compat@1, RT-709 §C.1).
+#
+# Fleet evidence is the authority for "installed", never git tags. Each supported
+# entry references a Backend-Core contract snapshot by commit and git blob (verified
+# against git history by check.mjs): no YAML is copied here, so nothing can drift.
+# Dropping an entry is an explicit, reviewed change (and removes its accepted breaks).
+schema: retail-tower/pos-compat@1
+fleet_baseline:
+  source: owner-attested lab terminal inventory (the only terminal; no pilot or production terminals)
+  captured_at: 2026-10-24T09:12:29Z
+  evidence: https://rahmaqanater.atlassian.net/browse/RT-713?focusedCommentId=13734
+  installed:
+    - kind: build
+      build_id: 9dfd7d977267806a907d4c03a566382570cbd0c9
+supported:
+  - kind: build
+    build_id: 9dfd7d977267806a907d4c03a566382570cbd0c9
+    device_label: RT9 Lab Counter 1
+    pos_pin:
+      repo: Kemetra/POS
+      path: contracts/backend-core/PIN
+      blob: 4f160c6ec622585c51faeb5389bc8f6c6e808b73
+    contract_ref:
+      repo: Kemetra/Backend-Core
+      commit: 1711813df1f36d7ed60db1096f9a23c2be1e81c3
+      root: packages/contracts/openapi
+      files:
+        - path: catalog/read-down.yaml
+          blob: bd8e3abf4f02760d267bc74efc72c7e6ebd72768
+        - path: pos-cashier-admissions.openapi.yaml
+          blob: aec995a5b3ca23071e97c49d00666d19eb3ab4b0
+        - path: pos-operators.openapi.yaml
+          blob: afda13c78d545bcdb218a531a86a7bf33045f6bd
+        - path: pos-payments/vouchers.yaml
+          blob: 2c49388f4a5e2e26fad4b29651f6ccb938859e54
+        - path: pos-sales/sale-history.yaml
+          blob: 8457ef2ded8826ac61568230d92faa450c40fe77
+        - path: pos-sales/sales.yaml
+          blob: b5371fc4cce168c43ef27c8e486e972c1e1b18ff
+        - path: pos-shifts.openapi.yaml
+          blob: f70e81b7e9b5ccae51fd5722af24f0bc387c48ea
+        - path: pos-terminal-pairing.openapi.yaml
+          blob: 2d8d71974386bb613b7918aefd49d848bb12faac
+    snapshot_sha256: deff7d9c6e93c76fc4d1c93502c7d230ac3039888fff4732c8774e5836e01063
+    status: supported
+    added_by: RT-713 (seed from comment 13734)
+# Test-only probes that prove the harness itself: they never count as real-client
+# compatibility. A deliberately breaking candidate must fail; a compatible one must pass.
+synthetic_snapshots:
+  - id: synth-breaking-01
+    snapshot: synthetic/base
+    candidate: synthetic/breaking-01
+    label: test-only
+    expect: breaking
+  - id: synth-compatible-01
+    snapshot: synthetic/base
+    candidate: synthetic/compatible-01
+    label: test-only
+    expect: compatible

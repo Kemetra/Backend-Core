@@ -1,0 +1,2 @@
+### Added
+- RT-713 `[GATED .github + contracts-compat]`, owner authorization 2026-10-21 (RT-713 comment 13209): `contracts-compat/` POS compatibility matrix, seeded with the lab terminal build `9dfd7d97` (Backend-Core contracts at `1711813d`, referenced by commit and blob), and a `contracts-compat` CI job that runs oasdiff from every supported snapshot to the current contracts and fails closed. Envelope/replay status is reported `NOT_PROVEN`; the verdict is never `VERIFIED`.

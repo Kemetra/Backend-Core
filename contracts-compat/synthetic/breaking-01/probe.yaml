@@ -1,0 +1,9 @@
+# TEST-ONLY synthetic candidate: removes /probe/items (breaking for the synthetic client).
+openapi: 3.0.3
+info: { title: synthetic-probe, version: 1.1.0 }
+paths:
+  /probe/other:
+    get:
+      operationId: probeOther
+      responses:
+        "200": { description: ok }
