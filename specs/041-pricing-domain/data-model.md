@@ -201,5 +201,5 @@ they become read-only compatibility projections (714).
 
 - All tables: `tenant_id = current_setting('app.tenant_id')` policies, like the catalog tables.
 - Store-scoped readers (Store Manager, POS) are filtered to their stores in the service layer, as today
-  (`store_access`). Store Managers may author only Store-scope events within bounds (spec 042 §7).
+  (`store_access`). Store Managers have no price authoring or store-price-override rights in V1 (spec 042 §7, Q-B2).
 - No table stores PII (§XIV). `created_by` / `published_by` are user ids only.

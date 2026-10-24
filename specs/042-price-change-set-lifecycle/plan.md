@@ -8,7 +8,7 @@
 | **Baseline** | `origin/main` @ `ff9e6833` (2026-10-17) |
 | **Decisions honoured** | Confluence RETAIL 23855106: 522–535 (Change Sets and publishing), 637–638 (lead time, emergency), 705–707 (authority, audit). Also 488, 519–520 from spec 041 |
 | **Depends on** | Spec 041 (model, OD-3, OD-4 selected). RT-281 (shared primitive, To Do). RT-284 (approval policy, To Do) |
-| **Status** | PLANNED. Open questions selected under the owner's standing delegation of 2026-10-17 (§11); the owner may revisit |
+| **Status** | PLANNED. Q-B2 and Q-B3 are owner-ratified Option B (2026-10-18; RT-484 comment 12650). Q-B1 and Q-B4–Q-B8 retain earlier selections (§11). Planning only; no implementation authorized |
 
 ## 1. Objective
 
@@ -183,17 +183,19 @@ RT-284 (the Policy engine) is not delivered. Until it is, a narrow tenant-level 
 | Actor | May author | May approve | May publish | Emergency |
 |---|---|---|---|---|
 | `owner`, `tenant_admin` | any scope | yes; **not their own sensitive set** (four eyes) | yes, once approved | yes, with capability `pricing.emergency` |
-| `store_manager` | **Store-scope only**, for Stores in `store_access`; operations `set_price`, `adjust_*`, `reset_store_override`; each line within **±bound %** of the inherited price (bound in the setting, default 10 %) (706) | no | no | no |
+| `store_manager` | **No price-change-set or store-price-override authoring in V1** (owner-ratified Q-B2); store availability permissions are separate | no | no | no |
 | others | no | no | no | no |
 
 - **Sensitive** = mode `always`, or any of: `|deltaPct| > maxAutoDeltaPct`, stores `> maxAutoStores`, any
   `move_store_zone`, past-dated, `kind = rollback` or `emergency`. A non-sensitive set may be self-approved by an
   owner/tenant_admin; a sensitive one needs a **different** owner/tenant_admin.
-- **Emergency path (535, 638).** `kind = emergency`, mandatory reason, capability `pricing.emergency`. It may skip
-  lead time, may past-date with reason, and may be published by its author **without a second approver**. It
-  never skips validation, preview or audit. An emergency publish opens a **post-hoc review** that a different
-  owner/tenant_admin must acknowledge (it shows in Pricing Health until acknowledged; Q-B3). Critical-correction
-  TTL and online-only behaviour are RT-487's (627).
+- **Emergency path (535, 638; owner-ratified Q-B3).** `kind = emergency` requires a reason and the
+  `pricing.emergency` capability. It may skip lead time and may past-date with a reason, but it remains
+  **sensitive** and must be approved **before publication** by a second, independent authorized
+  `owner`/`tenant_admin` who is **not the author/requester**. The publish action must reject a missing,
+  stale or self-approved approval and remain bound to the validated `previewHash`. Emergency never skips
+  validation, preview or audit; post-hoc-only review is not a publication substitute. Critical-correction
+  TTL and online-only behaviour remain RT-487's responsibility (627).
 - **Lead time (637).** Optional tenant setting `pricing.min_lead_time` (default none in v1). Standard sets with
   `earliestEffectiveAt < now + lead time` fail validation; emergency sets are exempt.
 - All checks run **server-side**; the Console only reflects them.
@@ -228,7 +230,7 @@ Spec 041 OD-4 selected **one shared primitive**. RT-281 is still To Do, so Prici
 | Header table with a `domain` discriminator (`pricing`, later `catalog`) | Items / lines tables (`price_change_set_items`, `price_change_set_lines`) |
 | State machine of §3, `version`, `expectedVersion` handling | Selectors and materialization (§4.3) |
 | `validatedAtRevision` / `previewHash` binding | Validation and conflict classes (§5) |
-| Approval hook: a domain callback returns `sensitive: bool` + reasons; the generic part enforces four eyes and the emergency post-hoc review | Sensitivity inputs and thresholds (§7) |
+| Approval hook: a domain callback returns `sensitive: bool` + reasons; the generic part enforces independent prior approval for sensitive sets, including emergencies | Sensitivity inputs and thresholds (§7) |
 | Revision allocation per `(tenant, domain)` under the domain's publish lock | Event writes, superseding and store fan-out |
 | Audit writer (§10) and outbox event `<domain>.revision.published` | Impact Preview payload (§6) |
 
@@ -243,20 +245,20 @@ Every transition writes one `audit_events` row: `action = pricing.change_set.<tr
 (`oldEventId/oldPrice → newEventId/newPrice`, effective time). Volume rule: the per-line record lives in the change-set
 lines table (immutable after publish) and the audit row references it, so audit stays one row per transition (Q-B5).
 
-## 11. Open questions (selected)
+## 11. Open questions and ratified selections
 
-| ID | Question | Selected (recommended) | Alternative |
+| ID | Question | Current decision | Rejected/deferred alternative |
 |---|---|---|---|
 | **Q-B1** | Default approval mode before RT-284 | **`always`** (every set needs an approve step; self-approval only when non-sensitive) | `sensitive_only` |
-| **Q-B2** | Store Manager bound | **±10 % of inherited price, Store scope only, no zone/book, no emergency** | No Store Manager authoring in v1 |
-| **Q-B3** | Emergency second approver | **Not required to publish; post-hoc review by a different admin required and tracked** | Require a second approver even in emergencies |
+| **Q-B2** | Store Manager bound | **No Store Manager price authoring or store-price-override edits in V1 — owner-ratified Option B (2026-10-18)** | ±10 % Store-scope authoring (rejected for V1) |
+| **Q-B3** | Emergency second approver | **Prior approval by an independent second authorized person is required before emergency publication — owner-ratified Option B (2026-10-18)** | Post-hoc-only review (rejected for V1) |
 | **Q-B4** | Deferred publish job vs publish-now with future effective time | **Publish now, future effective time** (no scheduler failure mode; enables pre-delivery) | A scheduler publishes at effective time |
 | **Q-B5** | Per-line before/after in `audit_events` or in change-set lines | **Lines table, referenced from one audit row per transition** | One audit row per line |
 | **Q-B6** | Line limit per change set | **50 000 lines**, revisit with RT-317-style measurement | Unlimited |
 | **Q-B7** | Do pending sets that overlap block each other? | **No; first publish wins. Only sets that intersect it (§3) go stale and re-validate; unrelated sets keep their approval** | Lock targets while a set is pending; or stale every pending set on any publish |
 | **Q-B8** | Store lifecycle changes (create, activate, deactivate, retire, time-zone change; no revision) alter a set's target Stores or their activation instants | **Bind the target Store set into the preview (`targetStoreSetHash`) and stale the set on mismatch at submit/approve/publish; re-approval required** | Re-materialize silently at publish (approver never sees the new Stores) |
 
-Each row: Selected — recommended option, chosen by the coordinator under the owner's standing delegation of 2026-10-17; owner may revisit.
+Q-B2 and Q-B3 are explicit owner-ratified Option B decisions (2026-10-18; RT-484 comment 12650 and Confluence owner-ratification page 43712513). Q-B1 and Q-B4–Q-B8 retain the earlier coordinator selections under the 2026-10-17 delegation. This does not authorize implementation.
 
 ## 12. Draft API surface (for PR-04; not OpenAPI)
 
@@ -271,7 +273,8 @@ Each row: Selected — recommended option, chosen by the coordinator under the o
 | `POST …/{id}/publish` `{expectedVersion}` | → `published`, returns `revisionNo` |
 | `POST …/{id}/rollback` `{from?, reason}` | creates a rollback set |
 | `POST …/{id}/cancel` | → `cancelled` |
-| `POST …/{id}/emergency-review` | acknowledges the post-hoc review |
+
+Emergency uses the same `submit` → independent `approve` → `publish` flow, with the prior approval recorded and checked at publish. A post-hoc-only `emergency-review` endpoint is not part of the V1 draft.
 
 ## 13. Acceptance-criteria trace (RT-484)
 
