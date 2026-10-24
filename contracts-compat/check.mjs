@@ -3,13 +3,15 @@
 //   node contracts-compat/check.mjs [--mode pr|release] [--now <iso>]
 //
 // For each supported POS build/release in pos-supported.yaml it re-reads the pinned
-// Backend-Core contract files from git history (commit + blob, verified), then runs
-// oasdiff (composed, --fail-on WARN, tools/oasdiff/severity-levels.txt) from that
-// snapshot to the current packages/contracts/openapi. Three results are reported
-// separately: harness correctness (synthetic test-only probes), real-snapshot
-// compatibility (oasdiff), and envelope/replay status. The last is NOT_PROVEN until
-// recorded outbox fixtures and envelope tests exist, so the verdict is never VERIFIED
-// and `--mode release` fails. Needs `oasdiff` on PATH (or OASDIFF=…) and full git history.
+// Backend-Core contract files from git history (commit + blob, verified), then:
+//   1. runs oasdiff (composed, --fail-on WARN, tools/oasdiff/severity-levels.txt) from the
+//      snapshot to the current packages/contracts/openapi;
+//   2. runs the envelope/idempotency-key rules (lib/semantics.mjs) snapshot -> current;
+//   3. replays the snapshot's fixtures (replay/<snapshot-id>/*.yaml) against both, offline.
+// Reported separately: harness correctness (synthetic test-only probes), real-snapshot
+// oasdiff, envelope/idempotency, and replay with its counts by provenance. Replay is at
+// contract level (no running Backend-Core). `--mode release` also requires at least one
+// `recorded` fixture per snapshot. Needs `oasdiff` on PATH (or OASDIFF=…) and full git history.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,16 +19,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { evaluateMatrix, parseAcceptedBreaks, snapshotId } from "./lib/evaluate.mjs";
+import { mutate } from "./lib/mutations.mjs";
 import { diffTrees, writeIgnoreFile } from "./lib/oasdiff.mjs";
+import { proveSnapshot } from "./lib/proof.mjs";
+import { fixtureFiles } from "./lib/replay.mjs";
+import { loadDocs, loadDocsTolerant } from "./lib/spec.mjs";
 import { parseYamlSubset } from "./lib/yaml-subset.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 const CONTRACTS = "packages/contracts/openapi";
 const SEVERITY_FILE = path.join(ROOT, "tools/oasdiff/severity-levels.txt");
-const REPLAY_STATUS =
-  "NOT_PROVEN (no recorded outbox fixtures and no envelope/idempotency tests yet; RT-713 stays open)";
+const REPLAY_DIR = path.join(HERE, "replay");
 const SKIPPED = (why) => ({ label: `SKIPPED (${why})`, ok: true });
+const proofSkipped = (why) => ({ envelope: SKIPPED(why), replay: SKIPPED(why), proven: false, recorded: false });
 
 // `git` comes from the runner's PATH, like oasdiff and node in tools/oasdiff/check.sh: this
 // job runs only in CI or on a developer machine, never on untrusted input.
@@ -66,9 +72,32 @@ function runProbes(probes, ctx) {
   return ok;
 }
 
+// Each synthetic envelope/replay probe applies one named regression to the synthetic snapshot
+// and must make the rules fail (or, for `none`, pass): proof that the rules can fail.
+function runSemanticProbes(probes, ctx) {
+  let ok = true;
+  for (const p of probes) {
+    const snapshotDocs = loadDocs(path.join(HERE, p.snapshot));
+    const result = proveSnapshot({
+      snapshotDocs,
+      candidateDocs: mutate(snapshotDocs, p.mutation),
+      fixtureFiles: [path.join(HERE, p.fixture)],
+      snapshotId: "synthetic",
+    });
+    const problems = [...result.semantics.problems, ...result.replay.problems];
+    const pass = (problems.length === 0) === (p.expect === "pass") && result.replay.events > 0;
+    ok &&= pass;
+    ctx.out.push(`  [${pass ? "OK" : "FAIL"}] ${p.id} (test-only): ${p.mutation} expected ${p.expect}, ${problems.length} problem(s)`);
+    if (!pass) ctx.out.push(...problems);
+  }
+  return ok;
+}
+
 function runHarness(matrix, ctx) {
   ctx.out.push("harness correctness (synthetic, test-only; says nothing about real clients):");
-  const ok = runProbes(matrix.synthetic_snapshots ?? [], ctx);
+  const diffOk = runProbes(matrix.synthetic_snapshots ?? [], ctx);
+  const semanticOk = runSemanticProbes(matrix.synthetic_semantics ?? [], ctx);
+  const ok = diffOk && semanticOk;
   if (!ok) ctx.out.push("::error::harness probes missing or wrong: the gate cannot be trusted");
   return { label: ok ? "PASS" : "FAIL", ok };
 }
@@ -90,6 +119,41 @@ function runCompat(entries, accepted, ctx) {
   }
   const n = entries.length;
   return { label: ok ? `PASS (${n} snapshot${n === 1 ? "" : "s"})` : "FAIL", ok };
+}
+
+// Envelope/idempotency rules and offline replay for every supported snapshot (already extracted
+// by runCompat). Zero fixtures for a snapshot is NOT_PROVEN for it, never a pass (RT-709 §C.2).
+function runProof(entries, ctx) {
+  ctx.out.push("envelope/idempotency + replay (contract level, offline):");
+  const { docs: candidateDocs, skipped } = loadDocsTolerant(path.join(ROOT, CONTRACTS));
+  if (skipped.length > 0) ctx.out.push(`::warning::oasdiff could not flatten ${skipped.length} current contract file(s): ${skipped.join(", ")}`);
+  const total = { operations: 0, events: 0, recorded: 0, derived: 0, problems: [], unproven: 0, unrecorded: 0 };
+  for (const entry of entries) {
+    const id = snapshotId(entry);
+    const files = fixtureFiles(REPLAY_DIR, id);
+    const r = proveSnapshot({ snapshotDocs: loadDocs(path.join(ctx.work, "snapshots", id)), candidateDocs, fixtureFiles: files, snapshotId: id });
+    total.operations += r.semantics.operations;
+    total.events += r.replay.events;
+    total.recorded += r.replay.counts.recorded;
+    total.derived += r.replay.counts["contract-derived"];
+    total.unproven += r.replay.counts.recorded + r.replay.counts["contract-derived"] > 0 ? 0 : 1;
+    total.unrecorded += r.replay.counts.recorded > 0 ? 0 : 1;
+    total.problems.push(...r.semantics.problems.map((m) => `${id} envelope: ${m}`), ...r.replay.problems.map((m) => `${id} replay: ${m}`));
+  }
+  total.problems.forEach((m) => ctx.out.push(`  [FAIL] ${m}`));
+  return summarizeProof(total);
+}
+
+function summarizeProof(t) {
+  const failed = t.problems.length > 0;
+  const counts = `${t.events} event(s): ${t.recorded} recorded, ${t.derived} contract-derived`;
+  const replayLabel = t.unproven > 0 ? `NOT_PROVEN (a supported snapshot has no eligible fixture; ${counts})` : `PASS (${counts})`;
+  return {
+    envelope: { label: failed ? "FAIL" : `PASS (${t.operations} operation(s) across the snapshots)`, ok: !failed },
+    replay: { label: failed ? "FAIL" : replayLabel, ok: !failed },
+    proven: !failed && t.unproven === 0,
+    recorded: t.unrecorded === 0,
+  };
 }
 
 function loadMatrix(matrixText, out) {
@@ -115,18 +179,32 @@ function announce(result, out) {
   result.problems.forEach((p) => out.push(`::error::${result.state}: ${p}`));
 }
 
-function summarize({ out, result, accepted, harness, compat, mode }) {
-  const failed = result.state.startsWith("FAIL_") || accepted.problems.length > 0 || !harness.ok || !compat.ok;
-  const notGreen = !failed && mode === "release";
-  if (notGreen) out.push("::error::release mode: envelope/replay status is NOT_PROVEN, so the release gate is not green");
+// VERIFIED (RT-709 §C.1: oasdiff + envelope tests pass for every snapshot) is only printed when
+// every supported snapshot also has an eligible replay fixture; release mode additionally needs
+// a `recorded` one, because contract-derived fixtures are not terminal recordings.
+function verdictOf({ failed, proof, mode }) {
+  if (failed) return { text: "FAIL", exit: 1 };
+  if (!proof.proven) return { text: "NOT_VERIFIED (replay NOT_PROVEN)", exit: mode === "release" ? 1 : 0 };
+  if (mode === "release" && !proof.recorded) {
+    return { text: "NOT_VERIFIED (release mode needs a recorded fixture per snapshot)", exit: 1 };
+  }
+  return { text: "VERIFIED (contract level; replay is offline)", exit: 0 };
+}
+
+function summarize({ out, result, accepted, harness, compat, proof, mode }) {
+  const failed =
+    result.state.startsWith("FAIL_") || accepted.problems.length > 0 || ![harness, compat, proof.envelope, proof.replay].every((r) => r.ok);
+  const verdict = verdictOf({ failed, proof, mode });
+  if (verdict.exit === 1 && !failed) out.push(`::error::${verdict.text}`);
   out.push(
     "",
-    `harness correctness : ${harness.label}`,
+    `harness correctness  : ${harness.label}`,
     `real-snapshot oasdiff: ${compat.label}`,
-    `envelope/replay      : ${REPLAY_STATUS}`,
-    `compatibility verdict: ${failed ? "FAIL" : "NOT_VERIFIED (never VERIFIED until envelope/replay are proven)"}`,
+    `envelope/idempotency : ${proof.envelope.label}`,
+    `replay               : ${proof.replay.label}`,
+    `compatibility verdict: ${verdict.text}`,
   );
-  return { exit: failed || notGreen ? 1 : 0, lines: out };
+  return { exit: verdict.exit, lines: out };
 }
 
 /** @returns { exit: number, lines: string[] } */
@@ -145,7 +223,8 @@ export function run({ mode = "pr", now = new Date(), matrixText, acceptedText } 
     const ctx = { out, work, severityFile: SEVERITY_FILE, emptyIgnore };
     const harness = result.state === "FAIL_INVALID_MATRIX" ? SKIPPED("matrix invalid") : runHarness(matrix, ctx);
     const compat = result.state === "READY" ? runCompat(result.supported, accepted, ctx) : SKIPPED(result.state);
-    return summarize({ out, result, accepted, harness, compat, mode });
+    const proof = result.state === "READY" && compat.ok ? runProof(result.supported, ctx) : proofSkipped(result.state);
+    return summarize({ out, result, accepted, harness, compat, proof, mode });
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

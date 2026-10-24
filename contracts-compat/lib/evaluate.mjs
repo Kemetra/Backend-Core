@@ -54,8 +54,17 @@ const SYNTHETIC_SPEC = {
   label: oneOf(["test-only"]),
   expect: oneOf(["breaking", "compatible"]),
 };
+const SEMANTIC_SPEC = {
+  id: nonEmpty,
+  snapshot: nonEmpty,
+  fixture: nonEmpty,
+  mutation: nonEmpty,
+  label: oneOf(["test-only"]),
+  expect: oneOf(["pass", "fail"]),
+};
 const KEYS = {
-  top: ["schema", "fleet_baseline", "supported", "bootstrap_exception", "synthetic_snapshots"],
+  top: ["schema", "fleet_baseline", "supported", "bootstrap_exception", "synthetic_snapshots", "synthetic_semantics"],
+  semantic: Object.keys(SEMANTIC_SPEC),
   baseline: Object.keys(BASELINE_SPEC),
   installed: ["kind", "build_id", "pos_version"],
   supported: ["kind", "build_id", "pos_version", "release_tag", "device_label", "pos_pin", "contract_ref", ...Object.keys(SUPPORTED_COMMON)],
@@ -156,14 +165,14 @@ function checkException(ex, installedCount, problems) {
 }
 
 // Synthetic probes prove the harness, never real-client compatibility: they must say so.
-function checkSynthetic(list, problems) {
+function checkSynthetic(list, { name, spec, keys }, problems) {
   if (list === undefined) return;
-  if (!Array.isArray(list)) return problems.push("synthetic_snapshots must be a list");
+  if (!Array.isArray(list)) return problems.push(`${name} must be a list`);
   list.forEach((s, i) => {
-    const where = `synthetic_snapshots[${i}]`;
+    const where = `${name}[${i}]`;
     if (!isObj(s)) return problems.push(`${where}: must be a mapping`);
-    checkKeys(s, KEYS.synthetic, where, problems);
-    checkShape(s, SYNTHETIC_SPEC, where, problems);
+    checkKeys(s, keys, where, problems);
+    checkShape(s, spec, where, problems);
   });
 }
 
@@ -182,7 +191,8 @@ function checkSections(matrix, problems) {
   checkSupported(matrix.supported, problems);
   const installedCount = Array.isArray(fb?.installed) ? fb.installed.length : 0;
   checkException(matrix.bootstrap_exception, installedCount, problems);
-  checkSynthetic(matrix.synthetic_snapshots, problems);
+  checkSynthetic(matrix.synthetic_snapshots, { name: "synthetic_snapshots", spec: SYNTHETIC_SPEC, keys: KEYS.synthetic }, problems);
+  checkSynthetic(matrix.synthetic_semantics, { name: "synthetic_semantics", spec: SEMANTIC_SPEC, keys: KEYS.semantic }, problems);
 }
 
 // ---- evaluation --------------------------------------------------------------------------------

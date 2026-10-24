@@ -18,6 +18,7 @@ import {
 } from "../lib/evaluate.mjs";
 import { diffTrees, writeIgnoreFile } from "../lib/oasdiff.mjs";
 import { parseYamlSubset } from "../lib/yaml-subset.mjs";
+import "./proof.spec.mjs"; // envelope, replay and validator specs run with this file (CI runs one path)
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const COMPAT = path.resolve(HERE, "..");
@@ -240,16 +241,31 @@ test("introduced breaking change turns the diff red; compatible one passes", nee
   }
 });
 
-test("run(): committed matrix passes against current contracts, verdict is never VERIFIED", needsOasdiff, () => {
+test("run(): committed matrix passes; VERIFIED is contract-level and release mode needs a recorded fixture", needsOasdiff, () => {
   const r = run({ now: NOW });
-  assert.equal(r.exit, 0, r.lines.join("\n"));
-  const text = r.lines.join("\n");
-  assert.match(text, /harness correctness : PASS/);
-  assert.match(text, /real-snapshot oasdiff: PASS \(1 snapshot\)/);
-  assert.match(text, /envelope\/replay\s+: NOT_PROVEN/);
-  assert.doesNotMatch(text, /\bVERIFIED\b(?!\s*until)/);
-  assert.equal(run({ now: NOW, mode: "release" }).exit, 1, "release mode must not go green while replay is NOT_PROVEN");
+  const text = r.lines.join(" | ");
+  assert.equal(r.exit, 0, text);
+  assert.match(text, /harness correctness +: PASS/);
+  assert.match(text, /real-snapshot oasdiff: PASS [(]1 snapshot[)]/);
+  assert.match(text, /envelope[/]idempotency +: PASS/);
+  assert.match(text, /replay +: PASS [(]5 event[(]s[)]: 0 recorded, 5 contract-derived[)]/);
+  assert.match(text, /VERIFIED [(]contract level; replay is offline[)]/);
+  const release = run({ now: NOW, mode: "release" });
+  assert.equal(release.exit, 1, "release mode must not go green without a recorded fixture");
+  assert.match(release.lines.join(" | "), /needs a recorded fixture/);
 });
+
+test("run(): a supported snapshot with no replay fixture is NOT_PROVEN, never VERIFIED", needsOasdiff, () => {
+  const m = MATRIX_TEXT.split("9dfd7d977267806a907d4c03a566382570cbd0c9").join("b".repeat(40));
+  const r = run({ now: NOW, matrixText: m });
+  const text = r.lines.join(" | ");
+  assert.equal(r.exit, 0, text);
+  assert.match(text, /replay +: NOT_PROVEN/);
+  assert.match(text, /compatibility verdict: NOT_VERIFIED/);
+  assert.doesNotMatch(text, /compatibility verdict: VERIFIED/);
+  assert.equal(run({ now: NOW, matrixText: m, mode: "release" }).exit, 1);
+});
+
 
 test("run(): a tampered blob, an unknown kind or an empty matrix fail the job", needsOasdiff, () => {
   const tampered = MATRIX_TEXT.replace("blob: bd8e3abf4f02760d267bc74efc72c7e6ebd72768", `blob: ${"1".repeat(40)}`);

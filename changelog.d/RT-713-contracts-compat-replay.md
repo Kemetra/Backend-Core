@@ -1,0 +1,2 @@
+### Added
+- RT-713 `[contracts-compat]`, owner authorization 2026-10-21 (RT-713 comment 13209), owner decision 2026-10-24 to finish it in RT-713: idempotency-key rules (`x-idempotency` and the `Idempotency-Key` header retained, non-2xx statuses retained) and an offline contract-level replay of fixture events (`contracts-compat/replay/`, RT-709 §C.2) for each supported POS snapshot, with test-only mutation probes proving the rules can fail. The verdict is `VERIFIED (contract level)` only when every snapshot has an eligible fixture; release mode still needs a recorded fixture.

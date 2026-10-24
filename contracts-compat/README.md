@@ -16,13 +16,39 @@ Design: RT-709 §C.1 (Confluence page 43712707). Owner authorization: RT-713 com
 3. Extracts those files with `git show` and runs `oasdiff breaking --composed --fail-on WARN`
    (same severity file as `tools/oasdiff/check.sh`) from the snapshot to the current
    `packages/contracts/openapi`.
-4. Runs the synthetic **test-only** probes (`synthetic/`): a deliberately breaking candidate
-   must fail and a compatible one must pass. This proves the harness, not real clients.
+4. Runs the idempotency rules (`lib/semantics.mjs`) snapshot -> current. Only rules oasdiff does
+   not already enforce live there (probes show oasdiff passes each regression): an operation
+   the snapshot marks `x-idempotency: required` still does, and still requires the
+   `Idempotency-Key` header if the snapshot did; every non-2xx status the snapshot declares is
+   still declared. A required `error.code` being removed is already an oasdiff ERR.
+5. Replays the snapshot's fixtures (`replay/<snapshot-id>/*.yaml`, RT-709 §C.2) **at contract
+   level, offline**. Each event is checked on its own, first against the snapshot (a fixture
+   must be valid there), then against the current contracts: the operation exists, the
+   `Idempotency-Key` fits the header schema, the body validates against the request schema (a
+   small fail-closed validator: an unimplemented schema keyword is an error), and the expected
+   status is still declared. Nothing simulates the server: Backend-Core's runtime idempotency
+   behavior stays covered by `apps/api/test/idempotency/replay.spec.ts` (db-integration).
+6. Runs the synthetic **test-only** probes (`synthetic/`): a deliberately breaking candidate
+   must fail and a compatible one must pass (oasdiff), and each named regression in
+   `lib/mutations.mjs` must make the idempotency/replay rules fail. This proves the harness,
+   not real clients.
 
-It reports three things separately: harness correctness, real-snapshot oasdiff, and
-envelope/replay status. Envelope/replay is `NOT_PROVEN` (no recorded outbox fixtures and no
-envelope tests exist yet), so the verdict is **never `VERIFIED`** and `--mode release`
-exits non-zero.
+The output keeps these results apart: harness correctness, real-snapshot oasdiff,
+envelope/idempotency, and replay with its counts by provenance.
+
+**Verdict.** `VERIFIED (contract level; replay is offline)` means oasdiff and the idempotency
+rules pass for every snapshot **and** each has at least one eligible fixture. A snapshot with no
+fixture makes replay `NOT_PROVEN` (verdict `NOT_VERIFIED`, never a pass). `--mode release`
+additionally needs one `recorded` fixture per snapshot, because `contract-derived` fixtures are
+authored from the pinned contract, not recorded from a terminal; today there are none, so
+release mode exits non-zero.
+
+### Fixture provenance
+
+`recorded` (scrubbed capture from a supported terminal), `contract-derived` (authored from the
+snapshot's own contract and validated against it; the POS persists sale ids in its outbox and
+builds wire payloads at drain time, so there is no stored payload to record), `synthetic`
+(test-only, never allowed for a real snapshot's coverage).
 
 ## States
 
@@ -38,8 +64,9 @@ exits non-zero.
 
 - **Add:** record the terminal inventory on RT-713 (device label, POS commit, capture date), then
   add an `installed` and a `supported` entry. Take `contract_ref` from that POS commit's
-  `contracts/backend-core/PIN` (commit + the pinned files' blobs), copy the PIN blob into
-  `pos_pin`, and compute `snapshot_sha256` (sha256 of the sorted `<blob>  <path>\n` lines).
+  `contracts/backend-core/PIN` (commit + the pinned files' blobs), copy the PIN blob and the BC commit it pins into
+  `pos_pin` (`bc_commit` must equal `contract_ref.commit`), add a replay fixture under
+  `replay/<snapshot-id>/`, and compute `snapshot_sha256` (sha256 of the sorted `<blob>  <path>\n` lines).
 - **Drop:** delete the entry and its `accepted-breaks.txt` lines in a reviewed PR. Never drop a
   version that is still installed.
 
@@ -49,9 +76,10 @@ exits non-zero.
 They do **not** expire with the PR (unlike `tools/oasdiff/breaking-ignore.txt`): a snapshot is
 fixed, so an accepted break stays true for every later PR until the snapshot is dropped.
 
-## Known gaps (RT-713 stays open)
+## Known gaps
 
-- Replay harness over recorded outbox fixtures, and envelope/idempotency tests per snapshot.
+- No `recorded` fixture yet (needs scrubbed captures from the lab terminal); replay never runs
+  against a live Backend-Core here. Release gating on this result is RT-863.
 - Shadow monorepo: `contracts-compat/` arrives by re-import; the `commit` references point at
   standalone Backend-Core history, and the graph tier/job keys are a separate policy change.
 

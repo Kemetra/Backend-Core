@@ -1,0 +1,27 @@
+# TEST-ONLY synthetic replay fixture (RT-713): in-order, duplicate, conflicting key, out-of-order.
+schema: retail-tower/pos-replay@1
+snapshot: synthetic
+provenance: synthetic
+recorded_from: synthetic (test-only)
+events:
+  - seq: 1
+    operation: POST /probe/orders
+    idempotency_key: synthetic-key-000000001
+    body_ref: bodies/order-1.json
+    expect_status: 201
+  - seq: 2
+    operation: POST /probe/orders
+    idempotency_key: synthetic-key-000000001
+    body_ref: bodies/order-1.json
+    duplicate_of: 1
+    expect_status: 201
+  - seq: 3
+    operation: POST /probe/orders
+    idempotency_key: synthetic-key-000000001
+    body_ref: bodies/order-1-changed.json
+    expect_status: 409
+  - seq: 4
+    operation: POST /probe/orders/{ref}/cancel
+    idempotency_key: synthetic-key-000000002
+    body_ref: bodies/cancel-1.json
+    expect_status: 404

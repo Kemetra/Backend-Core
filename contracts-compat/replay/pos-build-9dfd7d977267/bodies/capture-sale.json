@@ -1,0 +1,17 @@
+{
+  "sourceSystem": "pos-pulse",
+  "externalId": "pos-pulse:fixture-0000-0001",
+  "currencyCode": "EGP",
+  "posTotal": "15.00",
+  "occurredAt": "2026-10-24T09:00:00.000Z",
+  "lines": [
+    {
+      "lineName": "Fixture item",
+      "quantity": "2",
+      "unit": "each",
+      "unitPrice": "7.50",
+      "lineAmount": "15.00",
+      "currencyCode": "EGP"
+    }
+  ]
+}
