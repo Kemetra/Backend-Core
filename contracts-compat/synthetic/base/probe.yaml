@@ -1,0 +1,19 @@
+# TEST-ONLY synthetic contract (RT-713 harness probe). Never real POS compatibility evidence.
+openapi: 3.0.3
+info: { title: synthetic-probe, version: 1.0.0 }
+paths:
+  /probe/items:
+    get:
+      operationId: probeListItems
+      parameters:
+        - { name: limit, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { type: string } }

@@ -1,0 +1,9 @@
+# Accepted breaking changes against a supported POS snapshot (RT-713).
+#
+# One line per finding: <snapshot-id> <reason with RT-<n> and consumer:<NAME>>: <oasdiff singleline finding>
+# Get the finding with: oasdiff breaking --composed --format singleline <snapshot-dir>/**/*.yaml packages/contracts/openapi/**/*.yaml
+#
+# Unlike tools/oasdiff/breaking-ignore.txt these lines do NOT expire with the PR that adds them:
+# a snapshot is fixed, so an accepted break stays true for every later PR. Remove a line only
+# together with the snapshot it belongs to (dropping a POS version is an explicit reviewed change).
+# Needs owner approval; none exist today.
