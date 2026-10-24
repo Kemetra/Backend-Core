@@ -20,6 +20,7 @@ supported:
       repo: Kemetra/POS
       path: contracts/backend-core/PIN
       blob: 4f160c6ec622585c51faeb5389bc8f6c6e808b73
+      bc_commit: 1711813df1f36d7ed60db1096f9a23c2be1e81c3
     contract_ref:
       repo: Kemetra/Backend-Core
       commit: 1711813df1f36d7ed60db1096f9a23c2be1e81c3

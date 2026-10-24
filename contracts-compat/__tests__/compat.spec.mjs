@@ -136,7 +136,7 @@ test("bootstrap exception while something is installed: invalid", () => {
   };
   const r = evaluate(m);
   assert.equal(r.state, "FAIL_INVALID_MATRIX");
-  assert.match(r.problems.join("\n"), /non-empty/);
+  assert.match(r.problems.join(" | "), /non-empty/);
 });
 
 test("stale fleet baseline warns on a PR and fails in release mode", () => {
@@ -147,6 +147,28 @@ test("stale fleet baseline warns on a PR and fails in release mode", () => {
   const rel = evaluate(fresh(), { now: late, mode: "release" });
   assert.equal(rel.state, "FAIL_MISSING_SNAPSHOT");
   assert.match(rel.problems[0], /FAIL_STALE_FLEET/);
+});
+
+test("supported entry without a pos_pin, or with a pin on another BC commit, is invalid", () => {
+  const none = fresh();
+  delete none.supported[0].pos_pin;
+  assert.equal(evaluate(none).state, "FAIL_INVALID_MATRIX");
+  const other = fresh();
+  other.supported[0].pos_pin.bc_commit = "e".repeat(40);
+  const r = evaluate(other);
+  assert.equal(r.state, "FAIL_INVALID_MATRIX");
+  assert.match(r.problems.join(" | "), /pos_pin.bc_commit must equal/);
+});
+
+test("a future fleet capture time is a problem, not a fresh baseline", () => {
+  const early = new Date("2026-10-23T00:00:00Z"); // a day before the capture
+  for (const mode of ["pr", "release"]) {
+    const r = evaluate(fresh(), { now: early, mode });
+    assert.equal(r.state, "FAIL_MISSING_SNAPSHOT");
+    assert.match(r.problems[0], /in the future/);
+  }
+  const skew = new Date("2026-10-24T09:00:00Z"); // 12 minutes before: within allowed skew
+  assert.equal(evaluate(fresh(), { now: skew }).state, "READY");
 });
 
 test("synthetic probes must be labelled test-only", () => {

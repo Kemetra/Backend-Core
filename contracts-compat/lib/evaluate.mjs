@@ -39,6 +39,9 @@ const SUPPORTED_COMMON = {
   added_by: nonEmpty,
   snapshot_sha256: isSha256,
 };
+// The POS PIN is a POS-repo object, so BC history cannot verify it; the matrix must at least
+// say which BC commit that PIN pins, and it must be the commit contract_ref reads.
+const PIN_SPEC = { repo: nonEmpty, path: nonEmpty, blob: isSha1, bc_commit: isSha1 };
 const REF_SPEC = { commit: isSha1, root: nonEmpty };
 const FILE_SPEC = { path: isSafePath, blob: isSha1 };
 const EXCEPTION_FIELDS = ["approved_by", "approved_at", "jira", "residual_risk", "expires_when"];
@@ -121,6 +124,13 @@ function checkContractRef(ref, where, problems) {
   if (new Set(paths).size !== paths.length) problems.push(`${where}.contract_ref.files has duplicate paths`);
 }
 
+function checkPin(e, where, problems) {
+  checkShape(e.pos_pin, PIN_SPEC, `${where}.pos_pin`, problems);
+  if (isObj(e.pos_pin) && e.pos_pin.bc_commit !== e.contract_ref?.commit) {
+    problems.push(`${where}: pos_pin.bc_commit must equal contract_ref.commit`);
+  }
+}
+
 function checkSupported(list, problems) {
   if (!Array.isArray(list)) return problems.push("supported must be a list");
   list.forEach((e, i) => {
@@ -129,6 +139,7 @@ function checkSupported(list, problems) {
     checkKeys(e, KEYS.supported, where, problems);
     checkShape(e, { ...KIND_SPEC.supported[e.kind], ...SUPPORTED_COMMON }, where, problems);
     checkContractRef(e.contract_ref, where, problems);
+    checkPin(e, where, problems);
   });
 }
 
@@ -206,10 +217,16 @@ function uncoveredInstalled(matrix) {
     .map((inst) => `installed ${identityOf(inst)} has no entry in supported`);
 }
 
-function staleness(matrix, now) {
-  const ageDays = (now.getTime() - Date.parse(matrix.fleet_baseline.captured_at)) / 86_400_000;
-  if (ageDays <= FRESHNESS_DAYS) return null;
-  return `FAIL_STALE_FLEET: fleet_baseline.captured_at is ${ageDays.toFixed(1)} days old (limit ${FRESHNESS_DAYS})`;
+const MAX_CLOCK_SKEW_DAYS = 1 / 24;
+
+/** @returns { problem?: string, warning?: string } a future capture time must not read as fresh */
+function freshness(matrix, now, mode) {
+  const stamp = matrix.fleet_baseline.captured_at;
+  const ageDays = (now.getTime() - Date.parse(stamp)) / 86_400_000;
+  if (ageDays < -MAX_CLOCK_SKEW_DAYS) return { problem: `fleet_baseline.captured_at is in the future (${stamp})` };
+  if (ageDays <= FRESHNESS_DAYS) return {};
+  const msg = `FAIL_STALE_FLEET: fleet_baseline.captured_at is ${ageDays.toFixed(1)} days old (limit ${FRESHNESS_DAYS})`;
+  return mode === "release" ? { problem: msg } : { warning: msg };
 }
 
 /**
@@ -226,9 +243,9 @@ export function evaluateMatrix(matrix, { blobAt, now, mode = "pr" }) {
     ...uncoveredInstalled(matrix),
     ...matrix.supported.flatMap((e) => verifySnapshot(e, blobAt)),
   ];
-  const warnings = [];
-  const stale = staleness(matrix, now);
-  if (stale) (mode === "release" ? problems : warnings).push(stale);
+  const { problem, warning } = freshness(matrix, now, mode);
+  if (problem) problems.push(problem);
+  const warnings = warning ? [warning] : [];
   const state = problems.length > 0 ? "FAIL_MISSING_SNAPSHOT" : "READY";
   return { state, problems, warnings, supported: matrix.supported };
 }
