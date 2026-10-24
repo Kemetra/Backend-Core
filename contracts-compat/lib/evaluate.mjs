@@ -235,20 +235,30 @@ function freshness(matrix, now, mode) {
  * @param opts    { blobAt(commit, path) -> sha|null, now: Date, mode: 'pr'|'release' }
  * @returns { state, problems, warnings, supported }  supported = entries to diff when READY
  */
-export function evaluateMatrix(matrix, { blobAt, now, mode = "pr" }) {
-  const invalid = validateStructure(matrix);
-  if (invalid.length > 0) return { state: "FAIL_INVALID_MATRIX", problems: invalid, warnings: [], supported: [] };
-  if (matrix.fleet_baseline.installed.length === 0) return nothingInstalled(matrix);
-
+function coverage(matrix, blobAt) {
   const problems = [
     ...uncoveredInstalled(matrix),
     ...matrix.supported.flatMap((e) => verifySnapshot(e, blobAt)),
   ];
-  const { problem, warning } = freshness(matrix, now, mode);
-  if (problem) problems.push(problem);
-  const warnings = warning ? [warning] : [];
   const state = problems.length > 0 ? "FAIL_MISSING_SNAPSHOT" : "READY";
-  return { state, problems, warnings, supported: matrix.supported };
+  return { state, problems, warnings: [], supported: matrix.supported };
+}
+
+// Freshness applies to every outcome, the bootstrap-exception one included: a future or
+// stale attestation must not pass just because nothing is installed.
+function withFreshness(result, { problem, warning }) {
+  const problems = problem ? [...result.problems, problem] : result.problems;
+  const warnings = warning ? [...result.warnings, warning] : result.warnings;
+  const state = problem && !result.state.startsWith("FAIL_") ? "FAIL_MISSING_SNAPSHOT" : result.state;
+  return { ...result, state, problems, warnings };
+}
+
+export function evaluateMatrix(matrix, { blobAt, now, mode = "pr" }) {
+  const invalid = validateStructure(matrix);
+  if (invalid.length > 0) return { state: "FAIL_INVALID_MATRIX", problems: invalid, warnings: [], supported: [] };
+  const empty = matrix.fleet_baseline.installed.length === 0;
+  const result = empty ? nothingInstalled(matrix) : coverage(matrix, blobAt);
+  return withFreshness(result, freshness(matrix, now, mode));
 }
 
 // ---- accepted breaks -----------------------------------------------------------------------------

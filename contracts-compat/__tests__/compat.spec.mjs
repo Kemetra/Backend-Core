@@ -179,6 +179,22 @@ test("a future fleet capture time is a problem, not a fresh baseline", () => {
   assert.equal(evaluate(fresh(), { now: skew }).state, "READY");
 });
 
+test("freshness applies to the bootstrap-exception path too", () => {
+  const m = fresh();
+  m.fleet_baseline.installed = [];
+  m.supported = [];
+  m.bootstrap_exception = {
+    approved_by: "owner", approved_at: "2026-10-24", jira: "RT-713 comment 1",
+    residual_risk: "none installed", expires_when: "first installed release or build",
+  };
+  const future = evaluate(m, { now: new Date("2025-01-01T00:00:00Z") });
+  assert.equal(future.state, "FAIL_MISSING_SNAPSHOT");
+  assert.match(future.problems[0], /in the future/);
+  const stale = evaluate(m, { now: new Date("2026-12-01T00:00:00Z") });
+  assert.equal(stale.state, "NOT_PROVEN_NO_SUPPORTED_RELEASE_SNAPSHOT");
+  assert.match(stale.warnings[0], /FAIL_STALE_FLEET/);
+});
+
 test("synthetic probes must be labelled test-only", () => {
   const m = fresh();
   m.synthetic_snapshots[0].label = "real";
