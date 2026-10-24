@@ -125,6 +125,15 @@ test("bad fixtures: unknown operation, undeclared status, bad key, bad body, bro
   }
 });
 
+test("replay fails closed when the current contract has no JSON request schema", needsOasdiff, () => {
+  const docs = loadDocs(SYNTH);
+  const noJson = structuredClone(docs);
+  const op = noJson[0].paths["/probe/orders"].post;
+  op.requestBody = { required: true, content: { "text/plain": { schema: { type: "string" } } } };
+  const r = prove(docs, noJson);
+  assert.match(r.replay.problems.join(" | "), /no application[/]json schema/);
+});
+
 test("a malformed fixture index is reported, not ignored", () => {
   const work = mkdtempSync(path.join(tmpdir(), "replay-spec-"));
   try {

@@ -5,7 +5,7 @@ import { deref, indexOperations, jsonSchemaOf } from "./spec.mjs";
 const idempotentOps = (docs) =>
   [...indexOperations(docs).values()].filter((e) => e.op["x-idempotency"] === "required");
 
-const eachOp = (fn) => (docs) => idempotentOps(docs).forEach(fn);
+const eachOp = (fn) => (docs) => idempotentOps(docs).forEach((entry) => fn(entry));
 
 function optionalKeyHeader({ op, doc }) {
   op.parameters = op.parameters.map((p) => {

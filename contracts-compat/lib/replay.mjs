@@ -69,7 +69,9 @@ function checkBody(entry, body, label) {
   const rb = deref(entry.op.requestBody, entry.doc);
   if (!rb) return body === undefined ? [] : [`${label}: operation takes no request body`];
   if (body === undefined) return rb.required ? [`${label}: request body is required`] : [];
-  return validate(body, jsonSchemaOf(rb.content, entry.doc) ?? {}, entry.doc).map((m) => `${label}: body ${m}`);
+  const schema = jsonSchemaOf(rb.content, entry.doc);
+  if (!schema) return [`${label}: request body has no application/json schema, so the old body cannot be sent as JSON`];
+  return validate(body, schema, entry.doc).map((m) => `${label}: body ${m}`);
 }
 
 function checkEvent(event, body, index, label) {

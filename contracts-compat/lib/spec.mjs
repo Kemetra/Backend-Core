@@ -47,9 +47,13 @@ export function loadDocsTolerant(dir) {
 }
 
 /** Follow local `$ref`s; a non-local one throws. */
+const isRef = (n) => typeof n?.$ref === "string";
+
 export function deref(node, doc) {
   let cur = node;
-  for (let hops = 0; cur && typeof cur === "object" && cur.$ref !== undefined; hops += 1) {
+  let hops = 0;
+  while (isRef(cur)) {
+    hops += 1;
     if (hops > 20 || !cur.$ref.startsWith("#/")) throw new Error(`unsupported $ref '${cur.$ref}'`);
     cur = cur.$ref.slice(2).split("/").reduce((n, k) => n?.[k.replaceAll("~1", "/").replaceAll("~0", "~")], doc);
   }

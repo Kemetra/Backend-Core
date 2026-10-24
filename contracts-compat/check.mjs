@@ -75,7 +75,7 @@ function runProbes(probes, ctx) {
 // Each synthetic envelope/replay probe applies one named regression to the synthetic snapshot
 // and must make the rules fail (or, for `none`, pass): proof that the rules can fail.
 function runSemanticProbes(probes, ctx) {
-  let ok = true;
+  let ok = probes.length > 0; // an empty or missing probe list must fail closed
   for (const p of probes) {
     const snapshotDocs = loadDocs(path.join(HERE, p.snapshot));
     const result = proveSnapshot({
