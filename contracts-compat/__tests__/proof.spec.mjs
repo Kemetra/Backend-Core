@@ -10,6 +10,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { summarizeProof } from "../check.mjs";
 import { mutate, MUTATIONS } from "../lib/mutations.mjs";
 import { proveSnapshot } from "../lib/proof.mjs";
 import { fixtureFiles, loadFixture } from "../lib/replay.mjs";
@@ -55,6 +56,24 @@ test("validator: types, required, additionalProperties, enum, pattern, refs", ()
 test("validator: an unimplemented keyword is an error, never a silent pass", () => {
   assert.match(validate("x", { type: "string", uniqueItems: true }, DOC)[0], /unsupported schema keyword 'uniqueItems'/);
   assert.match(validate("x", { not: { type: "string" } }, DOC)[0], /unsupported schema keyword 'not'/);
+});
+
+test("validator: a nullable null still reports an unimplemented keyword", () => {
+  const schema = { type: "integer", nullable: true, multipleOf: 2 };
+  assert.match(validate(null, schema, DOC)[0], /unsupported schema keyword 'multipleOf'/);
+  assert.match(validate(4, schema, DOC)[0], /unsupported schema keyword 'multipleOf'/);
+});
+
+test("proof layers fail independently", () => {
+  const base = { operations: 3, events: 5, recorded: 0, derived: 5, envelopeProblems: [], replayProblems: [], unproven: 0, unrecorded: 1 };
+  const replayOnly = summarizeProof({ ...base, replayProblems: ["x"] });
+  assert.equal(replayOnly.envelope.ok, true);
+  assert.equal(replayOnly.replay.ok, false);
+  assert.equal(replayOnly.proven, false);
+  const envOnly = summarizeProof({ ...base, envelopeProblems: ["y"] });
+  assert.equal(envOnly.envelope.ok, false);
+  assert.equal(envOnly.replay.ok, true);
+  assert.equal(summarizeProof(base).proven, true);
 });
 
 test("validator: documentation keywords and nullable are accepted", () => {

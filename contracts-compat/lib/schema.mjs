@@ -80,9 +80,13 @@ const ignored = (kw) => ANNOTATIONS.has(kw) || kw.startsWith("x-");
 /** @returns string[] validation errors (empty = valid) */
 export function validate(value, schema, doc, p = "") {
   const node = deref(schema, doc);
-  if (value === null && node.nullable === true) return [];
   const ctx = { node, doc, p };
+  // A nullable null skips the value rules, but an unimplemented keyword must still be reported.
+  const skipRules = value === null && node.nullable === true;
   return Object.entries(node)
     .filter(([kw]) => !ignored(kw))
-    .flatMap(([kw, arg]) => (RULES[kw] ? RULES[kw](value, arg, ctx) : at(p, `unsupported schema keyword '${kw}'`)));
+    .flatMap(([kw, arg]) => {
+      if (!RULES[kw]) return at(p, `unsupported schema keyword '${kw}'`);
+      return skipRules ? [] : RULES[kw](value, arg, ctx);
+    });
 }

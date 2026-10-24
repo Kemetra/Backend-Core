@@ -127,7 +127,7 @@ function runProof(entries, ctx) {
   ctx.out.push("envelope/idempotency + replay (contract level, offline):");
   const { docs: candidateDocs, skipped } = loadDocsTolerant(path.join(ROOT, CONTRACTS));
   if (skipped.length > 0) ctx.out.push(`::warning::oasdiff could not flatten ${skipped.length} current contract file(s): ${skipped.join(", ")}`);
-  const total = { operations: 0, events: 0, recorded: 0, derived: 0, problems: [], unproven: 0, unrecorded: 0 };
+  const total = { operations: 0, events: 0, recorded: 0, derived: 0, envelopeProblems: [], replayProblems: [], unproven: 0, unrecorded: 0 };
   for (const entry of entries) {
     const id = snapshotId(entry);
     const files = fixtureFiles(REPLAY_DIR, id);
@@ -138,20 +138,22 @@ function runProof(entries, ctx) {
     total.derived += r.replay.counts["contract-derived"];
     total.unproven += r.replay.counts.recorded + r.replay.counts["contract-derived"] > 0 ? 0 : 1;
     total.unrecorded += r.replay.counts.recorded > 0 ? 0 : 1;
-    total.problems.push(...r.semantics.problems.map((m) => `${id} envelope: ${m}`), ...r.replay.problems.map((m) => `${id} replay: ${m}`));
+    total.envelopeProblems.push(...r.semantics.problems.map((m) => `${id} envelope: ${m}`));
+    total.replayProblems.push(...r.replay.problems.map((m) => `${id} replay: ${m}`));
   }
-  total.problems.forEach((m) => ctx.out.push(`  [FAIL] ${m}`));
+  [...total.envelopeProblems, ...total.replayProblems].forEach((m) => ctx.out.push(`  [FAIL] ${m}`));
   return summarizeProof(total);
 }
 
-function summarizeProof(t) {
-  const failed = t.problems.length > 0;
+export function summarizeProof(t) {
+  const envFailed = t.envelopeProblems.length > 0;
+  const replayFailed = t.replayProblems.length > 0;
   const counts = `${t.events} event(s): ${t.recorded} recorded, ${t.derived} contract-derived`;
   const replayLabel = t.unproven > 0 ? `NOT_PROVEN (a supported snapshot has no eligible fixture; ${counts})` : `PASS (${counts})`;
   return {
-    envelope: { label: failed ? "FAIL" : `PASS (${t.operations} operation(s) across the snapshots)`, ok: !failed },
-    replay: { label: failed ? "FAIL" : replayLabel, ok: !failed },
-    proven: !failed && t.unproven === 0,
+    envelope: { label: envFailed ? "FAIL" : `PASS (${t.operations} operation(s) across the snapshots)`, ok: !envFailed },
+    replay: { label: replayFailed ? "FAIL" : replayLabel, ok: !replayFailed },
+    proven: !envFailed && !replayFailed && t.unproven === 0,
     recorded: t.unrecorded === 0,
   };
 }
