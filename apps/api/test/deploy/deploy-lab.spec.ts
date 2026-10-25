@@ -23,6 +23,7 @@ type Ctx = {
   target: string;
   mode: string;
   currentRelease?: string | null;
+  now?: string;
   transport?: { roleArn?: string; ssmNodeId?: string; environmentReviewers?: number } | null;
 };
 type Ledger = {
@@ -30,6 +31,7 @@ type Ledger = {
   outcome: string;
   release: { tag: string; sha: string | null };
   images: Record<string, { digest: string; ref: string }>;
+  compat: { mode: string | null; notes: string[] };
   plan: {
     steps: { step: string; status: string }[];
     grants: string[];
@@ -411,8 +413,21 @@ describe("deploy-lab workflow: live job (RT-842)", () => {
   });
 
   it("checks the guard, then the variables, before any token or credential step", () => {
-    const steps = ["Guard", "Check the deploy variables", "Checkout main", "Print the OIDC claims", "Assume the deploy role", "Run the SSM gates", "Write the live ledger", "Upload the live ledger"];
+    const steps = ["Guard", "Check the deploy variables", "Checkout main", "Re-check the POS compat gate", "Print the OIDC claims", "Assume the deploy role", "Run the SSM gates", "Write the live ledger", "Upload the live ledger"];
     expect(live.steps.map((s) => steps.findIndex((p) => (s.name ?? "").startsWith(p)))).toEqual(steps.map((_, i) => i));
+  });
+
+  // RT-863 (Codex P1 on #922): approval can arrive after the fleet baseline goes stale.
+  it("re-runs the POS compat gate on the release commit after approval, before any credential", () => {
+    const recheck = stepNamed("Re-check the POS compat gate", live.steps);
+    expect(recheck.env?.RELEASE_SHA).toBe("${{ needs.preflight.outputs.release_sha }}");
+    expect(recheck.run).toContain("set -euo pipefail");
+    expect(recheck.run).toContain('archive --format=tar "$RELEASE_SHA" contracts-compat');
+    expect(recheck.run).toContain('node deploy/release-compat-gate.cjs --source "$SRC"');
+    expect(stepNamed("Checkout main", live.steps).with?.["fetch-depth"]).toBe(0);
+    const at = (p: string) => live.steps.findIndex((s) => (s.name ?? "").startsWith(p));
+    expect(at("Re-check the POS compat gate")).toBeLessThan(at("Assume the deploy role"));
+    expect(at("Re-check the POS compat gate")).toBeLessThan(at("Run the SSM gates"));
   });
 
   it("takes the role and region only from the aws-lab variables, with a SHA-pinned configure-aws-credentials", () => {
@@ -665,6 +680,37 @@ function writeSource(files: Record<string, string>, allowlist?: string[]): void 
   // the release commit's own bundle allowlist, in release-bundle.sh's format
   const entries = (allowlist ?? shipped).map((f) => `  ${f}`).join("\n");
   put("source/deploy/release-bundle.sh", `#!/usr/bin/env bash\n# Files shipped in the bundle.\nALLOWLIST=(\n${entries}\n)\n`);
+  writeCompatSource();
+}
+
+const BUILD_A = "9dfd7d977267806a907d4c03a566382570cbd0c9";
+const BUILD_B = "0123456789abcdef0123456789abcdef01234567";
+const daysAgo = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString().replace(/\.\d{3}Z$/, "Z");
+// The repository's real matrix is the template, so every fixture passes contracts-compat's own
+// validateStructure; only captured_at and the supported entries change.
+const REAL_MATRIX = read("contracts-compat/pos-supported.yaml");
+const SUPPORTED_AT = REAL_MATRIX.indexOf("\nsupported:\n") + 1;
+const SYNTHETIC_AT = REAL_MATRIX.indexOf("\n# Test-only probes that prove the harness") + 1;
+const REAL_ENTRY = REAL_MATRIX.slice(SUPPORTED_AT + "supported:\n".length, SYNTHETIC_AT);
+const supportedEntry = (build: string): string => REAL_ENTRY.replace(`build_id: ${BUILD_A}`, `build_id: ${build}`);
+/** The release commit's contracts-compat matrix: the real one with a chosen capture time and builds. */
+function writeMatrix({ capturedAt = daysAgo(1), builds = [BUILD_A] }: { capturedAt?: string; builds?: string[] } = {}): void {
+  const supported = builds.length ? `supported:\n${builds.map(supportedEntry).join("")}` : "supported: []\n";
+  const head = REAL_MATRIX.slice(0, SUPPORTED_AT).replace(/^ {2}captured_at: .*$/m, `  captured_at: ${capturedAt}`);
+  put("source/contracts-compat/pos-supported.yaml", `${head}${supported}${REAL_MATRIX.slice(SYNTHETIC_AT)}`);
+}
+const snapshotOf = (build: string): string => `pos-build-${build.slice(0, 12)}`;
+function writeFixture(build: string, provenance: string, name = "outbox-replay.yaml"): void {
+  put(
+    `source/contracts-compat/replay/${snapshotOf(build)}/${name}`,
+    `# fixture\nschema: retail-tower/pos-replay@1\nsnapshot: ${snapshotOf(build)}\nprovenance: ${provenance}\nevents:\n  - seq: 1\n`,
+  );
+}
+/** Today's state: one supported build, a contract-derived fixture only (replay NOT_PROVEN for release mode). */
+function writeCompatSource(): void {
+  rmSync(join(dir, "source/contracts-compat"), { recursive: true, force: true });
+  writeMatrix();
+  writeFixture(BUILD_A, "contract-derived");
 }
 
 function writeCurrent(migrations: string[], blobs: Record<string, string> = {}): void {
@@ -788,7 +834,7 @@ describe("verify-release: refusals", () => {
   // db-integration. Before that, db-integration itself ran the packages/db and
   // worker DB suites, so a release is judged by its own ci.yml (equal strength).
   describe("db-package follows the release commit's own ci.yml", () => {
-    const [fast, db, dbPackage] = helper.REQUIRED_CHECKS;
+    const [fast, db, dbPackage, compat] = helper.REQUIRED_CHECKS;
     const green = (names: (string | undefined)[]): unknown[] =>
       names.map((name) => ({ name, conclusion: "success", slug: "github-actions", started_at: "2026-10-18T10:00:00Z" }));
     const SPLIT_CI = "jobs:\n  db-integration:\n    name: x\n  db-package:\n    name: y\n";
@@ -796,13 +842,13 @@ describe("verify-release: refusals", () => {
 
     it("requires db-package when the release's ci.yml defines the job", () => {
       put("source/.github/workflows/ci.yml", SPLIT_CI);
-      putJson("check-runs.json", green([fast, db]));
+      putJson("check-runs.json", green([fast, db, compat]));
       expectRefused(/db-package .* is 'missing'/);
     });
 
     it("requires db-package from a CRLF copy of a post-split ci.yml", () => {
       put("source/.github/workflows/ci.yml", SPLIT_CI.replace(/\n/g, "\r\n"));
-      putJson("check-runs.json", green([fast, db]));
+      putJson("check-runs.json", green([fast, db, compat]));
       expectRefused(/db-package .* is 'missing'/);
     });
 
@@ -813,14 +859,14 @@ describe("verify-release: refusals", () => {
       ["4-space indentation", "jobs:\n    db-package:\n        name: y\n"],
     ])("requires db-package when the job key carries %s", (_label, ciYml) => {
       put("source/.github/workflows/ci.yml", ciYml);
-      putJson("check-runs.json", green([fast, db]));
+      putJson("check-runs.json", green([fast, db, compat]));
       expectRefused(/db-package .* is 'missing'/);
     });
 
     it("requires db-package whenever the SHA has a db-package run, whatever ci.yml says", () => {
       put("source/.github/workflows/ci.yml", PRE_SPLIT_CI);
       putJson("check-runs.json", [
-        ...(green([fast, db]) as object[]),
+        ...(green([fast, db, compat]) as object[]),
         { name: dbPackage, conclusion: "failure", slug: "github-actions", started_at: "2026-10-18T10:00:00Z" },
       ]);
       expectRefused(/db-package .* is 'failure'/);
@@ -830,27 +876,27 @@ describe("verify-release: refusals", () => {
       rmSync(join(dir, "source/.github"), { recursive: true, force: true });
       put("decoy/workflows/ci.yml", PRE_SPLIT_CI);
       symlinkSync(join(dir, "decoy"), join(dir, "source/.github"));
-      putJson("check-runs.json", green([fast, db]));
+      putJson("check-runs.json", green([fast, db, compat]));
       expectRefused(/db-package .* is 'missing'/);
     });
 
     it("does not require db-package for a release whose ci.yml predates it", () => {
       put("source/.github/workflows/ci.yml", PRE_SPLIT_CI);
-      putJson("check-runs.json", green([fast, db]));
+      putJson("check-runs.json", green([fast, db, compat]));
       expect(refusalsOf()).toEqual([]);
     });
 
     it("still requires db-integration for a pre-split release", () => {
       put("source/.github/workflows/ci.yml", PRE_SPLIT_CI);
-      putJson("check-runs.json", green([fast]));
+      putJson("check-runs.json", green([fast, compat]));
       expectRefused(/db-integration .* is 'missing'/);
     });
 
     it("fails closed: an unreadable ci.yml requires all three checks", () => {
       rmSync(join(dir, "source/.github"), { recursive: true, force: true });
-      putJson("check-runs.json", green([fast, db]));
+      putJson("check-runs.json", green([fast, db, compat]));
       expectRefused(/db-package .* is 'missing'/);
-      putJson("check-runs.json", green([fast, db, dbPackage]));
+      putJson("check-runs.json", green([fast, db, dbPackage, compat]));
       expect(refusalsOf()).toEqual([]);
     });
   });
@@ -953,6 +999,209 @@ describe("verify-release: refusals", () => {
   it("refuses a missing migration list", () => {
     rmSync(join(dir, "migrations-target.txt"));
     expectRefused(/target migration list missing/);
+  });
+});
+
+// RT-863, owner decision MR-3 (RT-863 comment 13811): option (b) with automatic tightening.
+// Creating a symlink needs privileges on Windows; CI (Linux) always runs the symlink case.
+const itWithSymlinksCompat = process.platform === "win32" ? it.skip : it;
+describe("verify-release: POS compat gate (RT-863)", () => {
+  type Gate = {
+    COMPAT_CHECK: string;
+    MAX_CLOCK_SKEW_DAYS: number;
+    evaluateCompat: (source: string, now?: Date) => { mode: string | null; problems: string[]; notes: string[] };
+    main: (argv: string[]) => number;
+  };
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const gate = require(resolve(repoRoot, "deploy/release-compat-gate.cjs")) as Gate;
+  const COMPAT = "contracts-compat (POS supported snapshots)";
+  const runs = (compat: Record<string, unknown> | null): unknown[] => [
+    ...helper.REQUIRED_CHECKS.filter((n) => n !== COMPAT).map((name) => ({ name, conclusion: "success", slug: "github-actions", started_at: "2026-10-18T10:00:00Z" })),
+    ...(compat ? [{ name: COMPAT, slug: "github-actions", started_at: "2026-10-18T10:00:00Z", ...compat }] : []),
+  ];
+
+  it("is a required check of both release gates, with no pre-split exemption", () => {
+    expect(gate.COMPAT_CHECK).toBe(COMPAT);
+    expect(helper.REQUIRED_CHECKS).toContain(COMPAT);
+    put("source/.github/workflows/ci.yml", "jobs:\n  db-integration:\n    name: x\n");
+    putJson("check-runs.json", runs(null));
+    expectRefused(/required check 'contracts-compat \(POS supported snapshots\)' is 'missing' on the release SHA/);
+  });
+
+  it("refuses a release SHA without a compat run", () => {
+    putJson("check-runs.json", runs(null));
+    expectRefused(/required check 'contracts-compat \(POS supported snapshots\)' is 'missing'/);
+  });
+
+  it.each(["failure", "cancelled", "skipped", "timed_out", "neutral"])("refuses a compat run that is '%s'", (conclusion) => {
+    putJson("check-runs.json", runs({ conclusion }));
+    expectRefused(new RegExp(`required check 'contracts-compat \\(POS supported snapshots\\)' is '${conclusion}'`));
+  });
+
+  it("refuses a compat run from another app, and judges only the latest github-actions run", () => {
+    putJson("check-runs.json", runs({ conclusion: "success", slug: "some-bot" }));
+    expectRefused(/contracts-compat .* is 'missing'/);
+    putJson("check-runs.json", [
+      ...(runs({ conclusion: "success", started_at: "2026-10-18T09:00:00Z" }) as object[]),
+      { name: COMPAT, conclusion: "failure", slug: "github-actions", started_at: "2026-10-18T11:00:00Z" },
+    ]);
+    expectRefused(/contracts-compat .* is 'failure'/);
+  });
+
+  it("does not block on release-mode replay NOT_PROVEN, and records it in the ledger and summary (option b)", () => {
+    const { refusals, ledger } = helper.evaluate(dir, ctx());
+    expect(refusals).toEqual([]);
+    expect(ledger.compat.mode).toBe("pr+fleet");
+    expect(ledger.compat.notes.join("\n")).toMatch(/NOT_PROVEN \(no recorded replay fixture for pos-build-9dfd7d977267\)/);
+    expect(helper.renderSummary(ledger)).toMatch(/### POS compatibility[\s\S]*NOT\\_PROVEN/);
+  });
+
+  it("records NOT_PROVEN, not a pass, when nothing is supported (bootstrap exception)", () => {
+    writeMatrix({ builds: [] });
+    const { refusals, ledger } = helper.evaluate(dir, ctx());
+    expect(refusals).toEqual([]);
+    expect(ledger.compat.mode).toBe("pr+fleet");
+    expect(ledger.compat.notes.join("\n")).toMatch(/NOT_PROVEN \(no supported snapshot\)/);
+  });
+
+  it("refuses a stale fleet baseline at deploy time, even with a green PR-mode run", () => {
+    writeMatrix({ capturedAt: daysAgo(7.5) });
+    expectRefused(/FAIL_STALE_FLEET: fleet_baseline.captured_at is 7\.5 days old \(limit 7\)/);
+    writeMatrix({ capturedAt: daysAgo(6.5) });
+    expect(refusalsOf()).toEqual([]);
+  });
+
+  it("judges freshness at the verifier's clock, not the CI run's", () => {
+    writeMatrix({ capturedAt: "2026-10-24T09:12:29Z" });
+    expect(refusalsOf(ctx({ now: "2026-10-30T00:00:00Z" }))).toEqual([]);
+    expectRefused(/FAIL_STALE_FLEET/, ctx({ now: "2026-11-01T00:00:00Z" }));
+  });
+
+  it("refuses a fleet baseline captured in the future", () => {
+    writeMatrix({ capturedAt: daysAgo(-1) });
+    expectRefused(/fleet_baseline.captured_at is in the future/);
+  });
+
+  it("switches to release mode by itself once every supported snapshot has a recorded fixture", () => {
+    writeFixture(BUILD_A, "recorded", "terminal-capture.yaml");
+    const { refusals, ledger } = helper.evaluate(dir, ctx());
+    expect(refusals).toEqual([]);
+    expect(ledger.compat.mode).toBe("release");
+    expect(ledger.compat.notes.join("\n")).toMatch(/--mode release semantics/);
+    expect(ledger.compat.notes.join("\n")).not.toMatch(/NOT_PROVEN/);
+    // release mode still needs the green compat run and a fresh fleet
+    putJson("check-runs.json", runs({ conclusion: "failure" }));
+    expectRefused(/contracts-compat .* is 'failure'/);
+    putJson("check-runs.json", runs({ conclusion: "success" }));
+    writeMatrix({ capturedAt: daysAgo(10) });
+    expectRefused(/FAIL_STALE_FLEET/);
+  });
+
+  it("stays in PR mode while any supported snapshot still lacks a recorded fixture", () => {
+    writeMatrix({ builds: [BUILD_A, BUILD_B] });
+    writeFixture(BUILD_A, "recorded");
+    writeFixture(BUILD_B, "contract-derived");
+    const { refusals, ledger } = helper.evaluate(dir, ctx());
+    expect(refusals).toEqual([]);
+    expect(ledger.compat.mode).toBe("pr+fleet");
+    expect(ledger.compat.notes.join("\n")).toMatch(/no recorded replay fixture for pos-build-0123456789ab/);
+    expect(ledger.compat.notes.join("\n")).not.toMatch(/pos-build-9dfd7d977267/);
+  });
+
+  it("fails closed when the release commit's matrix is missing, unreadable or unexpected", () => {
+    rmSync(join(dir, "source/contracts-compat/pos-supported.yaml"));
+    expectRefused(/POS compat gate .*pos-supported.yaml is missing or unreadable/);
+    put("source/contracts-compat/pos-supported.yaml", "fleet_baseline:\n\tcaptured_at: x\n");
+    expectRefused(/cannot read .*tab character/);
+    writeMatrix();
+    const text = readFileSync(join(dir, "source/contracts-compat/pos-supported.yaml"), "utf8");
+    put("source/contracts-compat/pos-supported.yaml", text.replace(/^ {2}captured_at: .*\n/m, ""));
+    expectRefused(/invalid matrix: fleet_baseline: missing or invalid captured_at/);
+    put("source/contracts-compat/pos-supported.yaml", text.replace(/^ {2}- kind: build$/m, "  - kind: tablet"));
+    expectRefused(/unknown kind 'tablet'/);
+    put("source/contracts-compat/pos-supported.yaml", `${text}supported: []\n`);
+    expectRefused(/duplicate key 'supported'/);
+  });
+
+  it("reads any indentation contracts-compat's own parser accepts (Codex P2 on #922)", () => {
+    writeMatrix();
+    const text = readFileSync(join(dir, "source/contracts-compat/pos-supported.yaml"), "utf8");
+    // two more spaces under every top-level key: still the same matrix to parseYamlSubset
+    put("source/contracts-compat/pos-supported.yaml", text.replace(/^(?= )/gm, "  "));
+    const { refusals, ledger } = helper.evaluate(dir, ctx());
+    expect(refusals).toEqual([]);
+    expect(ledger.compat.notes.join("\n")).toMatch(/no recorded replay fixture for pos-build-9dfd7d977267/);
+  });
+
+  it("fails closed on an unreadable fixture index", () => {
+    put(`source/contracts-compat/replay/${snapshotOf(BUILD_A)}/broken.yaml`, "schema: x\nevents: []\n");
+    expectRefused(/replay fixtures for pos-build-9dfd7d977267 are unreadable/);
+    rmSync(join(dir, `source/contracts-compat/replay/${snapshotOf(BUILD_A)}/broken.yaml`));
+    for (const bad of ['"recorded', "'recorded", '"rec\\qorded"']) {
+      writeFixture(BUILD_A, bad);
+      expectRefused(/replay fixtures for pos-build-9dfd7d977267 are unreadable/);
+    }
+  });
+
+  it("refuses a malformed fixture with a ledger, not a crash, from the CLI", () => {
+    writeFixture(BUILD_A, '"recorded');
+    const out = join(dir, "out");
+    expect(helper.main(["--evidence", dir, "--out", out, "--release", TAG, "--jira-key", "RT-703", "--target", "lab-01", "--mode", "dry-run"])).toBe(1);
+    const ledger = JSON.parse(readFileSync(join(out, "ledger.json"), "utf8")) as Ledger;
+    expect(ledger.refusals.join("\n")).toMatch(/replay fixtures for pos-build-9dfd7d977267 are unreadable/);
+    expect(gate.main(["--source", join(dir, "source")])).toBe(1);
+  });
+
+  itWithSymlinksCompat("never follows a symlinked contracts-compat or fixture directory", () => {
+    rmSync(join(dir, "source/contracts-compat"), { recursive: true, force: true });
+    put("decoy/pos-supported.yaml", "x: y\n");
+    symlinkSync(join(dir, "decoy"), join(dir, "source/contracts-compat"));
+    expectRefused(/contracts-compat in the release commit is not a real directory/);
+    rmSync(join(dir, "source/contracts-compat"));
+    writeMatrix();
+    put("decoy2/recorded.yaml", "provenance: recorded\n");
+    mkdirSync(join(dir, "source/contracts-compat/replay"), { recursive: true });
+    symlinkSync(join(dir, "decoy2"), join(dir, `source/contracts-compat/replay/${snapshotOf(BUILD_A)}`));
+    expectRefused(/replay fixtures for pos-build-9dfd7d977267 are unreadable/);
+  });
+
+  it("judges the repository's real matrix with contracts-compat's own parser and freshness rule", () => {
+    const probe = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { readFileSync } from "node:fs";
+         import { FRESHNESS_DAYS, snapshotId } from "./contracts-compat/lib/evaluate.mjs";
+         import { parseYamlSubset } from "./contracts-compat/lib/yaml-subset.mjs";
+         const m = parseYamlSubset(readFileSync("contracts-compat/pos-supported.yaml", "utf8"));
+         console.log(JSON.stringify({ FRESHNESS_DAYS, captured: m.fleet_baseline.captured_at, ids: m.supported.map(snapshotId) }));`,
+      ],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    expect(probe.status).toBe(0);
+    const real = JSON.parse(probe.stdout) as { FRESHNESS_DAYS: number; captured: string; ids: string[] };
+    expect(real.FRESHNESS_DAYS).toBe(7);
+    const evalSrc = read("contracts-compat/lib/evaluate.mjs");
+    expect(evalSrc).toContain("const MAX_CLOCK_SKEW_DAYS = 1 / 24;");
+    expect(gate.MAX_CLOCK_SKEW_DAYS).toBe(1 / 24);
+    // the repository's real matrix, judged the day after it was captured
+    const day = new Date(Date.parse(real.captured) + 86_400_000);
+    const result = gate.evaluateCompat(repoRoot, day);
+    expect(result.problems).toEqual([]);
+    const unrecorded = real.ids.join(", ");
+    expect(result.mode === "release" || result.notes.join("\n").includes(unrecorded)).toBe(true);
+    expect(result.notes.join("\n")).toContain(real.captured);
+  });
+
+  it("runs as the release guard's CLI: exit 0 on pass, 1 on refusal, 2 on usage", () => {
+    const source = join(dir, "source");
+    expect(gate.main(["--source", source])).toBe(0);
+    writeMatrix({ capturedAt: daysAgo(30) });
+    expect(gate.main(["--source", source])).toBe(1);
+    expect(gate.main(["--source", source, "--now", daysAgo(29)])).toBe(0);
+    expect(gate.main([])).toBe(2);
+    expect(gate.main(["--source", source, "--now", "not-a-date"])).toBe(2);
   });
 });
 

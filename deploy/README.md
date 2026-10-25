@@ -274,6 +274,21 @@ plus the migrations 0038 and 0043 those catch-up scripts include, a
 `release.env` with the three image refs, and the manifest), `release-manifest.json`
 and `SHA256SUMS`. It holds no secrets and the workflow deploys nothing.
 
+**POS compatibility gate (RT-863).** Before anything is built, the guard
+requires the latest `fast`, `db-integration`, `db-package` and
+`contracts-compat (POS supported snapshots)` runs on the SHA to have
+succeeded, then runs `deploy/release-compat-gate.cjs` on the checked-out SHA.
+Under owner decision MR-3 (RT-863 comment 13811) it refuses a fleet baseline in
+`contracts-compat/pos-supported.yaml` that is older than 7 days (or in the
+future) at release time. Release-mode envelope/replay `NOT_PROVEN` (a supported
+snapshot without a `recorded` replay fixture) does not block. It is written
+to the run summary and the GitHub release notes instead. Once every supported
+snapshot has a `recorded` fixture, the gate applies `check.mjs --mode release`
+semantics on its own, with no code change. The publish job runs the gate again right
+before it creates the GitHub release, because building and attesting can take
+most of an hour. `verify-release.cjs` applies the
+same gate for the lab deploy.
+
 Verify a release before using it:
 
 ```bash
@@ -328,6 +343,14 @@ fails, if any of these checks fails:
 - the latest `fast`, `db-integration` and `db-package` runs on that commit succeeded
   (`db-package` only when that commit's own `ci.yml` defines it: before RT-816,
   `db-integration` ran those suites; an unreadable `ci.yml` requires all three);
+- the latest `contracts-compat (POS supported snapshots)` run on that commit
+  succeeded, with no pre-RT-713 exemption, and the commit's fleet baseline is
+  fresh now (RT-863, `deploy/release-compat-gate.cjs`, see the image release
+  section). Release-mode replay `NOT_PROVEN` is recorded in the ledger
+  (`compat`) and the summary, not refused, until every supported snapshot has
+  a `recorded` fixture. The live job re-runs this gate on the release commit
+  after the `aws-lab` approval, before any credential or SSM step, because the
+  baseline can go stale while the run waits;
 - both levels of `SHA256SUMS` match, and every bundled file except the
   generated `release.env` is byte-for-byte the file at the release commit;
 - the manifest is published and has registry digests for that commit;

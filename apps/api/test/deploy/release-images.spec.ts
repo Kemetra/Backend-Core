@@ -90,10 +90,53 @@ describe("release-images workflow", () => {
       "fast (build + Docker-free tests)",
       "db-integration (Testcontainers + RLS + migrations)",
       "db-package (packages/db migrations + worker DB suites)",
+      "contracts-compat (POS supported snapshots)",
     ]);
     expect(script).toContain('"missing"');
     expect(script).toContain('[ "$RESULT" = "success" ]');
     expect(script).toContain("check-runs");
+  });
+
+  // RT-863, owner decision MR-3 (option b with automatic tightening).
+  it("runs the POS compat gate on the verified SHA before anything is built, and fails closed", () => {
+    const guard = job("guard");
+    const names = guard.steps.map((s) => s.name ?? "");
+    const verify = names.findIndex((n) => n.startsWith("Verify SHA"));
+    const checkout = guard.steps.findIndex((s) => usesAction(s, "actions/checkout"));
+    const gate = guard.steps.findIndex((s) => /release-compat-gate\.cjs/.test(s.run ?? ""));
+    expect(verify).toBeGreaterThanOrEqual(0);
+    expect(checkout).toBeGreaterThan(verify);
+    expect(gate).toBeGreaterThan(checkout);
+    const run = guard.steps[gate]?.run ?? "";
+    expect(run).toContain("set -euo pipefail");
+    expect(run).toContain("node deploy/release-compat-gate.cjs --source .");
+    expect(run).toContain('[ "$STATUS" -eq 0 ] || {');
+    expect(run).toContain("contracts-compat (POS supported snapshots)");
+    expect(run).toContain("$GITHUB_STEP_SUMMARY");
+    // the guard stays read-only, and the build jobs still need it
+    expect(guard.permissions).toEqual({ contents: "read", checks: "read", packages: "read" });
+    for (const name of ["dry-run", "publish"]) expect(job(name).needs).toBe("guard");
+  });
+
+  it("re-checks the POS compat gate right before the GitHub release is created", () => {
+    const steps = job("publish").steps;
+    const recheck = steps.findIndex((s) => (s.name ?? "").startsWith("Re-check the POS compat gate"));
+    const create = steps.findIndex((s) => /gh release create/.test(s.run ?? ""));
+    expect(recheck).toBeGreaterThan(0);
+    expect(create).toBeGreaterThan(recheck);
+    // nothing slow runs between the re-check and the release: every push and attestation is before it
+    expect(steps.slice(recheck + 1).some((s) => isPush(s) || usesAction(s, "actions/attest-build-provenance"))).toBe(false);
+    expect(steps[recheck]?.run).toContain("set -euo pipefail");
+    expect(steps[recheck]?.run).toContain("node deploy/release-compat-gate.cjs --source .");
+  });
+
+  it("writes the compat decision (NOT_PROVEN included) into the GitHub release notes", () => {
+    const outputs = (workflow.jobs.guard as Job & { outputs?: Record<string, string> }).outputs ?? {};
+    expect(outputs.compat_evidence).toBe("${{ steps.compat.outputs.evidence }}");
+    const publish = job("publish") as Job & { env?: Record<string, string> };
+    expect(publish.env?.COMPAT_EVIDENCE).toBe("${{ needs.guard.outputs.compat_evidence }}");
+    const create = publish.steps.find((s) => /gh release create/.test(s.run ?? ""));
+    expect(create?.run).toMatch(/--notes "[^"]*\$COMPAT_EVIDENCE"/);
   });
 
   it("refuses an existing release, tag or GHCR image tag", () => {

@@ -334,7 +334,7 @@ jobs:
     timeout-minutes: 60
     environment: aws-lab
     permissions:
-      contents: read # checkout of main for the claim printer
+      contents: read # checkout of main for the claim printer and the compat re-check
       id-token: write # the OIDC token for the deploy role; nothing else is granted
     steps:
       - name: Guard (main only, live run, verified plan)
@@ -386,10 +386,26 @@ jobs:
           [[ "$AWS_REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]] || fail "AWS_REGION must be a region name such as us-east-1"
 
       # No `ref:` on purpose: the claim printer runs from the dispatched main commit.
+      # Full history: the compat re-check reads the release commit, an ancestor of main.
       - name: Checkout main
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      # RT-863: the aws-lab approval can come long after the preflight, so the POS
+      # compat gate (fleet freshness, release-mode switch) is judged again here, on
+      # the release commit's own contracts-compat/, before any token or SSM step.
+      - name: Re-check the POS compat gate after approval
+        env:
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::preflight plan does not name the release commit"; exit 1; }
+          SRC="$RUNNER_TEMP/release-source"
+          mkdir -p "$SRC"
+          git -c core.autocrlf=false archive --format=tar "$RELEASE_SHA" contracts-compat | tar -x -C "$SRC"
+          node deploy/release-compat-gate.cjs --source "$SRC"
 
       # RT-532 c12879: print the non-secret trust-policy claims before the first
       # assume, so a deny is diagnosed from claims, not guessed. Informational:
