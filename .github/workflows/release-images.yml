@@ -35,7 +35,7 @@ concurrency:
 
 jobs:
   guard:
-    name: guard (main tip + required checks + no existing release)
+    name: guard (main tip + required checks + POS compat + no existing release)
     # No job-level `if` on purpose: a dispatch from any other ref must FAIL in
     # the first step below, not be silently skipped as a green run.
     runs-on: ubuntu-24.04
@@ -48,6 +48,7 @@ jobs:
       sha: ${{ steps.verify.outputs.sha }}
       sha12: ${{ steps.verify.outputs.sha12 }}
       release_tag: ${{ steps.verify.outputs.release_tag }}
+      compat_evidence: ${{ steps.compat.outputs.evidence }}
     steps:
       - name: Log in to GHCR (read-only, for the tag-exists check)
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
@@ -67,7 +68,10 @@ jobs:
           # The ci.yml jobs that run on a push to main. The ruleset also requires
           # the PR-only oasdiff and schemathesis checks; they do not exist on a
           # main commit, so they are enforced at merge time, not here.
-          REQUIRED_CHECKS: '["fast (build + Docker-free tests)","db-integration (Testcontainers + RLS + migrations)","db-package (packages/db migrations + worker DB suites)"]'
+          # contracts-compat (RT-863): the POS compatibility matrix (check.mjs
+          # --mode pr) must be green on the SHA; the step after the checkout
+          # adds the release-time fleet freshness and the release-mode switch.
+          REQUIRED_CHECKS: '["fast (build + Docker-free tests)","db-integration (Testcontainers + RLS + migrations)","db-package (packages/db migrations + worker DB suites)","contracts-compat (POS supported snapshots)"]'
         run: |
           set -euo pipefail
           fail() { echo "::error::$*"; exit 1; }
@@ -122,6 +126,34 @@ jobs:
             echo "sha12=$SHA12"
             echo "release_tag=$RELEASE_TAG"
           } >> "$GITHUB_OUTPUT"
+
+      # No `ref:` on purpose: github.sha is the commit the step above proved equal
+      # to the input SHA and the main tip. The gate only reads files from it.
+      - name: Checkout the verified SHA (read-only, for the POS compat gate)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      # RT-863, owner decision MR-3 (option b with automatic tightening): the
+      # fleet baseline must be fresh at release time; replay NOT_PROVEN is
+      # recorded, not blocking, until every supported snapshot has a recorded
+      # fixture, and from then on the gate is --mode release. Same module as
+      # deploy/lab/verify-release.cjs.
+      - name: POS compat gate (fleet freshness, release-mode switch)
+        id: compat
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/compat-gate.txt"
+          STATUS=0
+          node deploy/release-compat-gate.cjs --source . > "$OUT" || STATUS=$?
+          cat "$OUT"
+          {
+            echo "### POS compatibility (RT-863)"
+            echo
+            sed 's/^::error:://; s/^/- /' "$OUT"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$STATUS" -eq 0 ] || { echo "::error::POS compat gate refused the release (contracts-compat (POS supported snapshots))"; exit 1; }
+          echo "evidence=$(grep '^POS compat:' "$OUT" | paste -sd ';' -)" >> "$GITHUB_OUTPUT"
 
   dry-run:
     name: dry run (build only, no push)
@@ -227,6 +259,7 @@ jobs:
     env:
       SHA: ${{ needs.guard.outputs.sha }}
       RELEASE_TAG: ${{ needs.guard.outputs.release_tag }}
+      COMPAT_EVIDENCE: ${{ needs.guard.outputs.compat_evidence }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
     steps:
@@ -374,7 +407,7 @@ jobs:
             --repo "$REPO" \
             --target "$SHA" \
             --title "Backend-Core images $RELEASE_TAG" \
-            --notes "Digest-pinned api, worker and migrate images built from $SHA. Verify with SHA256SUMS and gh attestation verify before use; see deploy/README.md." \
+            --notes "Digest-pinned api, worker and migrate images built from $SHA. Verify with SHA256SUMS and gh attestation verify before use; see deploy/README.md. $COMPAT_EVIDENCE" \
             "$RUNNER_TEMP/release-out/backend-core-release-${SHA:0:12}.tar.gz" \
             "$RUNNER_TEMP/release-out/release-manifest.json" \
             "$RUNNER_TEMP/release-out/SHA256SUMS"

@@ -14,7 +14,8 @@
 //   check-runs.json         [{name, conclusion, slug, started_at}] on <sha>
 //   attest-<target>.json    gh attestation verify --format json output (absent = not verified)
 //   migrations-target.txt   git ls-tree <sha> packages/db/drizzle/ (blob IDs catch in-place edits)
-//   source/                 git archive <sha>: every bundled file must be byte-for-byte the file there
+//   source/                 git archive <sha>: every bundled file must be byte-for-byte the file there;
+//                           its contracts-compat/ also feeds the POS compat gate (RT-863)
 //   environment.json        {status: present|not-visible|unknown, reviewers}
 //   collect-error.txt       only when collection stopped early: why (each line a refusal)
 //   current-release.json, current-tag-commit.txt, compare-current.json,
@@ -34,13 +35,23 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
+const { COMPAT_CHECK, evaluateCompat } = require("../release-compat-gate.cjs");
+
 const REPO = "Kemetra/Backend-Core";
 const TARGETS = ["api", "worker", "migrate"];
 const LAB_TARGETS = ["lab-01"];
 // The ci.yml jobs that run on a push to main; the same list release-images.yml requires.
 const DB_PACKAGE_CHECK = "db-package (packages/db migrations + worker DB suites)";
-const PRE_SPLIT_CHECKS = ["fast (build + Docker-free tests)", "db-integration (Testcontainers + RLS + migrations)"];
-const REQUIRED_CHECKS = [...PRE_SPLIT_CHECKS, DB_PACKAGE_CHECK];
+const REQUIRED_CHECKS = [
+  "fast (build + Docker-free tests)",
+  "db-integration (Testcontainers + RLS + migrations)",
+  DB_PACKAGE_CHECK,
+  COMPAT_CHECK,
+];
+// RT-863: the POS compat check has no pre-split exemption. A release commit without a green
+// compat run (older than RT-713 included) is refused: an unproven release must not reach the
+// lab, where the installed offline terminal talks to it.
+const PRE_SPLIT_CHECKS = REQUIRED_CHECKS.filter((name) => name !== DB_PACKAGE_CHECK);
 // RT-816 split the packages/db + worker DB suites out of db-integration into a
 // db-package job. A release whose own ci.yml has no such job ran them inside
 // db-integration, so its two checks prove the same thing (equal strength).
@@ -540,6 +551,9 @@ function verifyRelease(dir, ctx, sha) {
     ...checkCompare(readJson(path.join(dir, "compare.json")), sha),
     ...checkReleaseCiRuns(readJson(path.join(dir, "check-runs.json")), path.join(dir, "source")),
   ];
+  // RT-863: fresh fleet now, and release-mode semantics once every snapshot has a recorded fixture.
+  const compat = evaluateCompat(path.join(dir, "source"), ctx.now ? new Date(ctx.now) : new Date());
+  problems.push(...compat.problems);
   const releaseDir = path.join(dir, "release");
   const outerSums = readText(path.join(releaseDir, "SHA256SUMS"));
   problems.push(...checkSums(releaseDir, outerSums, [`${bundleName(sha)}.tar.gz`, "release-manifest.json"], "release SHA256SUMS"));
@@ -557,7 +571,7 @@ function verifyRelease(dir, ctx, sha) {
   for (const [target, image] of Object.entries(checked.images)) {
     problems.push(...checkAttestation(readJson(path.join(dir, `attest-${target}.json`)), target, image.digest, sha));
   }
-  return { problems, images: checked.images, files: Object.keys(manifest?.files ?? {}) };
+  return { problems, images: checked.images, files: Object.keys(manifest?.files ?? {}), compat: { mode: compat.mode, notes: compat.notes } };
 }
 
 /** The operator-asserted current release must itself be an immutable release reachable from main. */
@@ -594,7 +608,7 @@ function pendingApprovals(ctx, environment, transportProblems) {
   return pending;
 }
 
-function buildLedger({ ctx, sha, images, files, migrations, current, environment, transportProblems, refusals }) {
+function buildLedger({ ctx, sha, images, files, compat, migrations, current, environment, transportProblems, refusals }) {
   return {
     schemaVersion: 1,
     kind: "rt703-lab-deploy-ledger",
@@ -608,6 +622,8 @@ function buildLedger({ ctx, sha, images, files, migrations, current, environment
     release: { tag: ctx.release, sha },
     current,
     images,
+    // RT-863: how the POS compat gate judged the release, NOT_PROVEN included (option b).
+    compat: compat ?? { mode: null, notes: [] },
     plan: {
       steps: LIVE_STEPS.map((step) => ({ step, status: "not-run (dry run)" })),
       grants: files.filter((f) => /^docs\/operations\/sql\/[\w-]+-domain-grants\.sql$/.test(f)).sort(byText),
@@ -635,7 +651,7 @@ function evaluate(dir, ctx) {
   const meta = readJson(path.join(dir, "release.json"));
   refusals.push(...checkReleaseMeta(meta, ctx.release, "release"));
   const sha = SHA_RE.test(meta?.targetCommitish ?? "") ? meta.targetCommitish : null;
-  const verified = sha ? verifyRelease(dir, ctx, sha) : { problems: [], images: {}, files: [] };
+  const verified = sha ? verifyRelease(dir, ctx, sha) : { problems: [], images: {}, files: [], compat: null };
   refusals.push(...verified.problems);
   const cur = readCurrent(dir, ctx);
   refusals.push(...cur.problems);
@@ -646,7 +662,7 @@ function evaluate(dir, ctx) {
     refusals.push(...transportProblems, "live execution is not implemented in RT-703 slice 1 (dry run only)");
   }
   const environment = readJson(path.join(dir, "environment.json"));
-  const ledger = buildLedger({ ctx, sha, images: verified.images, files: verified.files, migrations: mig.plan, current: cur.current, environment, transportProblems, refusals });
+  const ledger = buildLedger({ ctx, sha, images: verified.images, files: verified.files, compat: verified.compat, migrations: mig.plan, current: cur.current, environment, transportProblems, refusals });
   return { refusals, ledger };
 }
 
@@ -667,6 +683,7 @@ function renderSummary(ledger) {
   if (ledger.refusals.length) lines.push("### Refused", "", ...ledger.refusals.map((r) => `- ${md(r)}`), "");
   lines.push("### Images", "", "| target | digest ref |", "|---|---|");
   for (const [target, image] of Object.entries(ledger.images)) lines.push(`| ${target} | \`${image.ref}\` |`);
+  if (ledger.compat?.notes?.length) lines.push("", "### POS compatibility", "", ...ledger.compat.notes.map((n) => `- ${md(n)}`));
   const mig = ledger.plan.migrations;
   if (mig) {
     // added is null when no current release was given or its evidence did not verify
