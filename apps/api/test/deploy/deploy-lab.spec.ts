@@ -1111,6 +1111,20 @@ describe("verify-release: POS compat gate (RT-863)", () => {
   it("fails closed on an unreadable fixture index", () => {
     put(`source/contracts-compat/replay/${snapshotOf(BUILD_A)}/broken.yaml`, "schema: x\nevents: []\n");
     expectRefused(/replay fixtures for pos-build-9dfd7d977267 are unreadable/);
+    rmSync(join(dir, `source/contracts-compat/replay/${snapshotOf(BUILD_A)}/broken.yaml`));
+    for (const bad of ['"recorded', "'recorded", '"rec\\qorded"']) {
+      writeFixture(BUILD_A, bad);
+      expectRefused(/replay fixtures for pos-build-9dfd7d977267 are unreadable/);
+    }
+  });
+
+  it("refuses a malformed fixture with a ledger, not a crash, from the CLI", () => {
+    writeFixture(BUILD_A, '"recorded');
+    const out = join(dir, "out");
+    expect(helper.main(["--evidence", dir, "--out", out, "--release", TAG, "--jira-key", "RT-703", "--target", "lab-01", "--mode", "dry-run"])).toBe(1);
+    const ledger = JSON.parse(readFileSync(join(out, "ledger.json"), "utf8")) as Ledger;
+    expect(ledger.refusals.join("\n")).toMatch(/replay fixtures for pos-build-9dfd7d977267 are unreadable/);
+    expect(gate.main(["--source", join(dir, "source")])).toBe(1);
   });
 
   itWithSymlinksCompat("never follows a symlinked contracts-compat or fixture directory", () => {

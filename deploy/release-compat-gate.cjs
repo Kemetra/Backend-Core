@@ -127,15 +127,19 @@ function fixtureProvenance(sourceDir, id) {
   const dir = path.join(sourceDir, REPLAY, id);
   if (!fs.existsSync(dir)) return [];
   if (!isRealDir(dir)) return null;
-  const out = [];
-  for (const name of fs.readdirSync(dir).filter((f) => f.endsWith(".yaml")).sort()) {
-    const text = readRegular(path.join(dir, name));
-    if (text === null) return null;
-    const hits = text.replace(/\r\n/g, "\n").split("\n").map((l) => /^provenance:[ ]+(.+)$/.exec(l)).filter(Boolean);
-    if (hits.length !== 1) return null;
-    out.push(scalar(hits[0][1]));
+  try {
+    const out = [];
+    for (const name of fs.readdirSync(dir).filter((f) => f.endsWith(".yaml")).sort()) {
+      const text = readRegular(path.join(dir, name));
+      if (text === null) return null;
+      const hits = text.replace(/\r\n/g, "\n").split("\n").map((l) => /^provenance:[ ]+(.+)$/.exec(l)).filter(Boolean);
+      if (hits.length !== 1) return null;
+      out.push(scalar(hits[0][1]));
+    }
+    return out;
+  } catch {
+    return null; // a bad quoted scalar or an unreadable directory is a refusal, never a crash
   }
-  return out;
 }
 
 function freshnessProblem(stamp, now) {
