@@ -284,7 +284,9 @@ future) at release time. Release-mode envelope/replay `NOT_PROVEN` (a supported
 snapshot without a `recorded` replay fixture) does not block. It is written
 to the run summary and the GitHub release notes instead. Once every supported
 snapshot has a `recorded` fixture, the gate applies `check.mjs --mode release`
-semantics on its own, with no code change. `verify-release.cjs` applies the
+semantics on its own, with no code change. The publish job runs the gate again right
+before it creates the GitHub release, because building and attesting can take
+most of an hour. `verify-release.cjs` applies the
 same gate for the lab deploy.
 
 Verify a release before using it:

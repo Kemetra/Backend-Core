@@ -118,6 +118,18 @@ describe("release-images workflow", () => {
     for (const name of ["dry-run", "publish"]) expect(job(name).needs).toBe("guard");
   });
 
+  it("re-checks the POS compat gate right before the GitHub release is created", () => {
+    const steps = job("publish").steps;
+    const recheck = steps.findIndex((s) => (s.name ?? "").startsWith("Re-check the POS compat gate"));
+    const create = steps.findIndex((s) => /gh release create/.test(s.run ?? ""));
+    expect(recheck).toBeGreaterThan(0);
+    expect(create).toBeGreaterThan(recheck);
+    // nothing slow runs between the re-check and the release: every push and attestation is before it
+    expect(steps.slice(recheck + 1).some((s) => isPush(s) || usesAction(s, "actions/attest-build-provenance"))).toBe(false);
+    expect(steps[recheck]?.run).toContain("set -euo pipefail");
+    expect(steps[recheck]?.run).toContain("node deploy/release-compat-gate.cjs --source .");
+  });
+
   it("writes the compat decision (NOT_PROVEN included) into the GitHub release notes", () => {
     const outputs = (workflow.jobs.guard as Job & { outputs?: Record<string, string> }).outputs ?? {};
     expect(outputs.compat_evidence).toBe("${{ steps.compat.outputs.evidence }}");

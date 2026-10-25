@@ -395,6 +395,14 @@ jobs:
             --api-digest "$API_DIGEST" --worker-digest "$WORKER_DIGEST" --migrate-digest "$MIGRATE_DIGEST" \
             --out "$RUNNER_TEMP/release-out"
 
+      # RT-863: building, pushing and attesting can take most of an hour, so the
+      # fleet freshness the guard checked is judged again right before the
+      # release, which is what deploy-lab consumes, is created.
+      - name: Re-check the POS compat gate before the release
+        run: |
+          set -euo pipefail
+          node deploy/release-compat-gate.cjs --source .
+
       - name: Create the GitHub release (never overwrites)
         run: |
           set -euo pipefail
