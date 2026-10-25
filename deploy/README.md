@@ -346,7 +346,9 @@ fails, if any of these checks fails:
   fresh now (RT-863, `deploy/release-compat-gate.cjs`, see the image release
   section). Release-mode replay `NOT_PROVEN` is recorded in the ledger
   (`compat`) and the summary, not refused, until every supported snapshot has
-  a `recorded` fixture;
+  a `recorded` fixture. The live job re-runs this gate on the release commit
+  after the `aws-lab` approval, before any credential or SSM step, because the
+  baseline can go stale while the run waits;
 - both levels of `SHA256SUMS` match, and every bundled file except the
   generated `release.env` is byte-for-byte the file at the release commit;
 - the manifest is published and has registry digests for that commit;

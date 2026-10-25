@@ -9,5 +9,7 @@
   Release-mode envelope/replay `NOT_PROVEN` is recorded in the run summary, the
   GitHub release notes and the lab ledger instead of blocking; once every
   supported snapshot has a `recorded` replay fixture the gate applies
-  `check.mjs --mode release` semantics with no further change. The RT-816
+  `check.mjs --mode release` semantics with no further change. The gate parses
+  with `contracts-compat`'s own code, and the `deploy-lab.yml` live job re-runs
+  it after the `aws-lab` approval, before any credential step. The RT-816
   `db-package` pre-split fallback is unchanged.

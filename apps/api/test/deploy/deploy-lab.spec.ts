@@ -413,8 +413,21 @@ describe("deploy-lab workflow: live job (RT-842)", () => {
   });
 
   it("checks the guard, then the variables, before any token or credential step", () => {
-    const steps = ["Guard", "Check the deploy variables", "Checkout main", "Print the OIDC claims", "Assume the deploy role", "Run the SSM gates", "Write the live ledger", "Upload the live ledger"];
+    const steps = ["Guard", "Check the deploy variables", "Checkout main", "Re-check the POS compat gate", "Print the OIDC claims", "Assume the deploy role", "Run the SSM gates", "Write the live ledger", "Upload the live ledger"];
     expect(live.steps.map((s) => steps.findIndex((p) => (s.name ?? "").startsWith(p)))).toEqual(steps.map((_, i) => i));
+  });
+
+  // RT-863 (Codex P1 on #922): approval can arrive after the fleet baseline goes stale.
+  it("re-runs the POS compat gate on the release commit after approval, before any credential", () => {
+    const recheck = stepNamed("Re-check the POS compat gate", live.steps);
+    expect(recheck.env?.RELEASE_SHA).toBe("${{ needs.preflight.outputs.release_sha }}");
+    expect(recheck.run).toContain("set -euo pipefail");
+    expect(recheck.run).toContain('archive --format=tar "$RELEASE_SHA" contracts-compat');
+    expect(recheck.run).toContain('node deploy/release-compat-gate.cjs --source "$SRC"');
+    expect(stepNamed("Checkout main", live.steps).with?.["fetch-depth"]).toBe(0);
+    const at = (p: string) => live.steps.findIndex((s) => (s.name ?? "").startsWith(p));
+    expect(at("Re-check the POS compat gate")).toBeLessThan(at("Assume the deploy role"));
+    expect(at("Re-check the POS compat gate")).toBeLessThan(at("Run the SSM gates"));
   });
 
   it("takes the role and region only from the aws-lab variables, with a SHA-pinned configure-aws-credentials", () => {
@@ -673,15 +686,18 @@ function writeSource(files: Record<string, string>, allowlist?: string[]): void 
 const BUILD_A = "9dfd7d977267806a907d4c03a566382570cbd0c9";
 const BUILD_B = "0123456789abcdef0123456789abcdef01234567";
 const daysAgo = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString().replace(/\.\d{3}Z$/, "Z");
-const supportedEntry = (build: string): string =>
-  `  - kind: build\n    build_id: ${build}\n    device_label: lab counter\n    contract_ref:\n      commit: ${SHA}\n      files:\n        - path: pos-sales/sales.yaml\n          blob: ${"b".repeat(40)}\n    status: supported\n`;
-/** The release commit's contracts-compat matrix (the fields the RT-863 gate reads, in pos-supported.yaml's shape). */
+// The repository's real matrix is the template, so every fixture passes contracts-compat's own
+// validateStructure; only captured_at and the supported entries change.
+const REAL_MATRIX = read("contracts-compat/pos-supported.yaml");
+const SUPPORTED_AT = REAL_MATRIX.indexOf("\nsupported:\n") + 1;
+const SYNTHETIC_AT = REAL_MATRIX.indexOf("\n# Test-only probes that prove the harness") + 1;
+const REAL_ENTRY = REAL_MATRIX.slice(SUPPORTED_AT + "supported:\n".length, SYNTHETIC_AT);
+const supportedEntry = (build: string): string => REAL_ENTRY.replace(`build_id: ${BUILD_A}`, `build_id: ${build}`);
+/** The release commit's contracts-compat matrix: the real one with a chosen capture time and builds. */
 function writeMatrix({ capturedAt = daysAgo(1), builds = [BUILD_A] }: { capturedAt?: string; builds?: string[] } = {}): void {
   const supported = builds.length ? `supported:\n${builds.map(supportedEntry).join("")}` : "supported: []\n";
-  put(
-    "source/contracts-compat/pos-supported.yaml",
-    `# POS compatibility matrix\nschema: retail-tower/pos-compat@1\nfleet_baseline:\n  source: lab inventory\n  captured_at: ${capturedAt}\n  evidence: https://example.test/RT-713\n  installed:\n    - kind: build\n      build_id: ${BUILD_A}\n${supported}synthetic_snapshots:\n  - id: synth\n    label: test-only\n`,
-  );
+  const head = REAL_MATRIX.slice(0, SUPPORTED_AT).replace(/^ {2}captured_at: .*$/m, `  captured_at: ${capturedAt}`);
+  put("source/contracts-compat/pos-supported.yaml", `${head}${supported}${REAL_MATRIX.slice(SYNTHETIC_AT)}`);
 }
 const snapshotOf = (build: string): string => `pos-build-${build.slice(0, 12)}`;
 function writeFixture(build: string, provenance: string, name = "outbox-replay.yaml"): void {
@@ -992,7 +1008,6 @@ const itWithSymlinksCompat = process.platform === "win32" ? it.skip : it;
 describe("verify-release: POS compat gate (RT-863)", () => {
   type Gate = {
     COMPAT_CHECK: string;
-    FRESHNESS_DAYS: number;
     MAX_CLOCK_SKEW_DAYS: number;
     evaluateCompat: (source: string, now?: Date) => { mode: string | null; problems: string[]; notes: string[] };
     main: (argv: string[]) => number;
@@ -1050,9 +1065,9 @@ describe("verify-release: POS compat gate (RT-863)", () => {
   });
 
   it("refuses a stale fleet baseline at deploy time, even with a green PR-mode run", () => {
-    writeMatrix({ capturedAt: daysAgo(gate.FRESHNESS_DAYS + 0.5) });
+    writeMatrix({ capturedAt: daysAgo(7.5) });
     expectRefused(/FAIL_STALE_FLEET: fleet_baseline.captured_at is 7\.5 days old \(limit 7\)/);
-    writeMatrix({ capturedAt: daysAgo(gate.FRESHNESS_DAYS - 0.5) });
+    writeMatrix({ capturedAt: daysAgo(6.5) });
     expect(refusalsOf()).toEqual([]);
   });
 
@@ -1098,14 +1113,24 @@ describe("verify-release: POS compat gate (RT-863)", () => {
     expectRefused(/POS compat gate .*pos-supported.yaml is missing or unreadable/);
     put("source/contracts-compat/pos-supported.yaml", "fleet_baseline:\n\tcaptured_at: x\n");
     expectRefused(/cannot read .*tab character/);
-    put("source/contracts-compat/pos-supported.yaml", "fleet_baseline:\n  source: x\nsupported: []\n");
-    expectRefused(/captured_at must appear exactly once/);
     writeMatrix();
     const text = readFileSync(join(dir, "source/contracts-compat/pos-supported.yaml"), "utf8");
-    put("source/contracts-compat/pos-supported.yaml", text.replace(/^  - kind: build$/m, "  - kind: tablet"));
-    expectRefused(/supported entry with kind 'tablet'/);
+    put("source/contracts-compat/pos-supported.yaml", text.replace(/^ {2}captured_at: .*\n/m, ""));
+    expectRefused(/invalid matrix: fleet_baseline: missing or invalid captured_at/);
+    put("source/contracts-compat/pos-supported.yaml", text.replace(/^ {2}- kind: build$/m, "  - kind: tablet"));
+    expectRefused(/unknown kind 'tablet'/);
     put("source/contracts-compat/pos-supported.yaml", `${text}supported: []\n`);
     expectRefused(/duplicate key 'supported'/);
+  });
+
+  it("reads any indentation contracts-compat's own parser accepts (Codex P2 on #922)", () => {
+    writeMatrix();
+    const text = readFileSync(join(dir, "source/contracts-compat/pos-supported.yaml"), "utf8");
+    // two more spaces under every top-level key: still the same matrix to parseYamlSubset
+    put("source/contracts-compat/pos-supported.yaml", text.replace(/^(?= )/gm, "  "));
+    const { refusals, ledger } = helper.evaluate(dir, ctx());
+    expect(refusals).toEqual([]);
+    expect(ledger.compat.notes.join("\n")).toMatch(/no recorded replay fixture for pos-build-9dfd7d977267/);
   });
 
   it("fails closed on an unreadable fixture index", () => {
@@ -1140,7 +1165,7 @@ describe("verify-release: POS compat gate (RT-863)", () => {
     expectRefused(/replay fixtures for pos-build-9dfd7d977267 are unreadable/);
   });
 
-  it("keeps its freshness rule and snapshot ids equal to contracts-compat's own (parity with the ESM parser)", () => {
+  it("judges the repository's real matrix with contracts-compat's own parser and freshness rule", () => {
     const probe = spawnSync(
       process.execPath,
       [
@@ -1156,7 +1181,7 @@ describe("verify-release: POS compat gate (RT-863)", () => {
     );
     expect(probe.status).toBe(0);
     const real = JSON.parse(probe.stdout) as { FRESHNESS_DAYS: number; captured: string; ids: string[] };
-    expect(gate.FRESHNESS_DAYS).toBe(real.FRESHNESS_DAYS);
+    expect(real.FRESHNESS_DAYS).toBe(7);
     const evalSrc = read("contracts-compat/lib/evaluate.mjs");
     expect(evalSrc).toContain("const MAX_CLOCK_SKEW_DAYS = 1 / 24;");
     expect(gate.MAX_CLOCK_SKEW_DAYS).toBe(1 / 24);

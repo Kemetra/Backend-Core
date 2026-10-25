@@ -17,27 +17,28 @@
 //
 // Reads only the release commit's own files (a checkout or `git archive <sha>`), never runs
 // them, makes no network call and fails closed: anything it cannot read or parse is a refusal.
-// The matrix reader below handles only the fields it needs and throws on anything unexpected;
-// contracts-compat/lib/yaml-subset.mjs stays the authority (ESM; the verifier is CommonJS).
+// Parsing is never re-implemented here: the matrix and fixture texts are parsed by
+// contracts-compat's own parseYamlSubset + validateStructure + snapshotId + PROVENANCE (ESM), run in a child
+// node process from the gate's OWN checkout (main), never from the release evidence.
 //
 // CLI (release guard):
 //   node deploy/release-compat-gate.cjs --source DIR [--now ISO]
 // Prints the decision; exit 0 = pass, 1 = refused, 2 = usage error.
 "use strict";
 
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 const COMPAT_CHECK = "contracts-compat (POS supported snapshots)";
-// Same values as contracts-compat/lib/evaluate.mjs (FRESHNESS_DAYS, owner decision O-3, and
-// MAX_CLOCK_SKEW_DAYS); the deploy-lab spec checks they stay equal.
-const FRESHNESS_DAYS = 7;
+// contracts-compat/lib/evaluate.mjs keeps this private; the deploy-lab spec checks it stays equal.
+// FRESHNESS_DAYS (owner decision O-3) is read from evaluate.mjs itself.
 const MAX_CLOCK_SKEW_DAYS = 1 / 24;
 const MATRIX = path.join("contracts-compat", "pos-supported.yaml");
 const REPLAY = path.join("contracts-compat", "replay");
+const COMPAT_LIB = path.join(__dirname, "..", "contracts-compat", "lib");
 const MAX_FILE_BYTES = 1024 * 1024;
-const TOP_KEY = /^([A-Za-z0-9_.-]+):(?:[ ]+(.*))?$/;
-const ITEM_KEY = /^([A-Za-z0-9_.-]+):(?:[ ]+(.*))?$/;
 
 /** A regular file under the size cap, never through a symlink; null otherwise. */
 function readRegular(file) {
@@ -57,96 +58,74 @@ function isRealDir(dir) {
   }
 }
 
-/** A plain or quoted scalar, without a trailing ` #` comment on a plain one. */
-function scalar(raw) {
-  const v = (raw ?? "").trim();
-  if (/^".*"$/.test(v)) return JSON.parse(v);
-  if (/^'.*'$/.test(v)) return v.slice(1, -1).replaceAll("''", "'");
-  if (/^["']/.test(v)) throw new Error(`unterminated quoted scalar ${v}`);
-  return v.replace(/\s+#.*$/, "");
-}
-
-/** Top-level keys -> { value, lines } of the block under each. Duplicates and tabs throw. */
-function topBlocks(text) {
-  const blocks = new Map();
-  let current = null;
-  for (const [i, line] of text.replace(/\r\n/g, "\n").split("\n").entries()) {
-    if (/\t/.test(line)) throw new Error(`line ${i + 1}: tab character`);
-    if (/^\s*(#.*)?$/.test(line)) continue;
-    const top = TOP_KEY.exec(line);
-    if (top) {
-      if (blocks.has(top[1])) throw new Error(`line ${i + 1}: duplicate key '${top[1]}'`);
-      current = { value: top[2] ?? "", lines: [] };
-      blocks.set(top[1], current);
-    } else if (current && line.startsWith(" ")) {
-      current.lines.push(line);
-    } else {
-      throw new Error(`line ${i + 1}: unexpected content`);
+/** replay/<dir>/*.yaml texts by directory name; a dir maps to null when anything in it is unreadable. */
+function readFixtures(sourceDir) {
+  const root = path.join(sourceDir, REPLAY);
+  const out = {};
+  if (!fs.existsSync(root)) return out;
+  for (const id of fs.readdirSync(root)) {
+    const dir = path.join(root, id);
+    if (!isRealDir(dir)) {
+      out[id] = null;
+      continue;
     }
+    const texts = fs.readdirSync(dir).filter((f) => f.endsWith(".yaml")).sort().map((f) => readRegular(path.join(dir, f)));
+    out[id] = texts.includes(null) ? null : texts;
   }
-  return blocks;
+  return out;
 }
 
-function capturedAt(block) {
-  if (!block || block.value !== "") throw new Error("fleet_baseline must be a mapping");
-  const hits = block.lines.map((l) => /^ {2}captured_at:[ ]+(.+)$/.exec(l)).filter(Boolean);
-  if (hits.length !== 1) throw new Error("fleet_baseline.captured_at must appear exactly once");
-  const stamp = scalar(hits[0][1]);
-  if (Number.isNaN(Date.parse(stamp))) throw new Error(`fleet_baseline.captured_at is not a timestamp (${stamp})`);
-  return stamp;
+// Runs in a child node process (ESM). Input on stdin: { matrix, fixtures }; output on stdout.
+const PARSE_SCRIPT = `
+import { readFileSync } from "node:fs";
+const [ev, ys, rp] = await Promise.all([import(process.env.COMPAT_EVALUATE), import(process.env.COMPAT_YAML), import(process.env.COMPAT_REPLAY)]);
+const input = JSON.parse(readFileSync(0, "utf8"));
+const out = { freshnessDays: ev.FRESHNESS_DAYS, provenance: {} };
+try {
+  const m = ys.parseYamlSubset(input.matrix);
+  const problems = ev.validateStructure(m);
+  if (problems.length > 0) out.error = "invalid matrix: " + problems.join("; ");
+  else Object.assign(out, { capturedAt: m.fleet_baseline.captured_at, ids: m.supported.map(ev.snapshotId) });
+} catch (e) {
+  out.error = e.message;
 }
-
-/** The snapshot id of every supported entry (contracts-compat/lib/evaluate.mjs snapshotId). */
-function supportedIds(block) {
-  if (!block) throw new Error("supported is missing");
-  if (block.value === "[]" && block.lines.length === 0) return [];
-  if (block.value !== "") throw new Error("supported must be a list");
-  const items = [];
-  for (const line of block.lines) {
-    const first = /^ {2}- (.*)$/.exec(line);
-    const key = first ? first[1] : (/^ {4}(\S.*)$/.exec(line) ?? [])[1];
-    if (first) items.push({});
-    else if (!/^ {4}/.test(line) || items.length === 0) throw new Error(`supported: unexpected line '${line.trim()}'`);
-    if (key === undefined) continue; // deeper nesting (pos_pin, contract_ref): not needed here
-    const kv = ITEM_KEY.exec(key);
-    if (!kv) throw new Error(`supported: unexpected line '${line.trim()}'`);
-    const item = items.at(-1);
-    if (Object.hasOwn(item, kv[1])) throw new Error(`supported: duplicate key '${kv[1]}'`);
-    item[kv[1]] = scalar(kv[2]);
-  }
-  if (items.length === 0) throw new Error("supported must be a list");
-  return items.map((e) => {
-    if (e.kind === "build" && /^[0-9a-f]{12,40}$/.test(e.build_id ?? "")) return `pos-build-${e.build_id.slice(0, 12)}`;
-    if (e.kind === "release" && /^[A-Za-z0-9._-]+$/.test(e.pos_version ?? "")) return `pos-release-${e.pos_version}`;
-    throw new Error(`supported entry with kind '${e.kind}' has no usable build_id/pos_version`);
-  });
-}
-
-/** Provenance of each fixture index under replay/<id>/ (none = []); null if unreadable. */
-function fixtureProvenance(sourceDir, id) {
-  const dir = path.join(sourceDir, REPLAY, id);
-  if (!fs.existsSync(dir)) return [];
-  if (!isRealDir(dir)) return null;
+for (const [id, texts] of Object.entries(input.fixtures)) {
   try {
-    const out = [];
-    for (const name of fs.readdirSync(dir).filter((f) => f.endsWith(".yaml")).sort()) {
-      const text = readRegular(path.join(dir, name));
-      if (text === null) return null;
-      const hits = text.replace(/\r\n/g, "\n").split("\n").map((l) => /^provenance:[ ]+(.+)$/.exec(l)).filter(Boolean);
-      if (hits.length !== 1) return null;
-      out.push(scalar(hits[0][1]));
-    }
-    return out;
+    const values = texts === null ? null : texts.map((t) => ys.parseYamlSubset(t).provenance);
+    // a provenance contracts-compat does not know is unreadable, never "not recorded"
+    out.provenance[id] = values && values.every((p) => rp.PROVENANCE.includes(p)) ? values : null;
   } catch {
-    return null; // a bad quoted scalar or an unreadable directory is a refusal, never a crash
+    out.provenance[id] = null;
   }
 }
+process.stdout.write(JSON.stringify(out));
+`;
 
-function freshnessProblem(stamp, now) {
+/** Parse with contracts-compat's own code. Throws when it cannot run or answer. */
+function parseWithCompatLib(matrix, fixtures) {
+  const res = spawnSync(process.execPath, ["--input-type=module", "-e", PARSE_SCRIPT], {
+    input: JSON.stringify({ matrix, fixtures }),
+    encoding: "utf8",
+    timeout: 30_000,
+    maxBuffer: 4 * 1024 * 1024,
+    env: {
+      PATH: process.env.PATH ?? "",
+      COMPAT_EVALUATE: pathToFileURL(path.join(COMPAT_LIB, "evaluate.mjs")).href,
+      COMPAT_YAML: pathToFileURL(path.join(COMPAT_LIB, "yaml-subset.mjs")).href,
+      COMPAT_REPLAY: pathToFileURL(path.join(COMPAT_LIB, "replay.mjs")).href,
+    },
+  });
+  if (res.status !== 0) throw new Error(`contracts-compat parser did not run (${(res.stderr || String(res.error ?? "")).trim().split("\n")[0]})`);
+  const out = JSON.parse(res.stdout);
+  if (!Number.isFinite(out.freshnessDays)) throw new Error("contracts-compat parser returned no FRESHNESS_DAYS");
+  return out;
+}
+
+function freshnessProblem(stamp, now, freshnessDays) {
   const ageDays = (now.getTime() - Date.parse(stamp)) / 86_400_000;
   if (ageDays < -MAX_CLOCK_SKEW_DAYS) return `fleet_baseline.captured_at is in the future (${stamp})`;
-  if (ageDays <= FRESHNESS_DAYS) return null;
-  return `FAIL_STALE_FLEET: fleet_baseline.captured_at is ${ageDays.toFixed(1)} days old (limit ${FRESHNESS_DAYS}); refresh the fleet baseline on RT-713 before releasing`;
+  if (ageDays <= freshnessDays) return null;
+  return `FAIL_STALE_FLEET: fleet_baseline.captured_at is ${ageDays.toFixed(1)} days old (limit ${freshnessDays}); refresh the fleet baseline on RT-713 before releasing`;
 }
 
 /**
@@ -163,21 +142,20 @@ function evaluateCompat(sourceDir, now = new Date()) {
   }
   const text = readRegular(path.join(sourceDir, MATRIX));
   if (text === null) return refuse(`${MATRIX} is missing or unreadable in the release commit`);
-  let stamp;
-  let ids;
+  let parsed;
   try {
-    const blocks = topBlocks(text);
-    stamp = capturedAt(blocks.get("fleet_baseline"));
-    ids = supportedIds(blocks.get("supported"));
+    parsed = parseWithCompatLib(text, readFixtures(sourceDir));
   } catch (err) {
-    return refuse(`cannot read ${MATRIX}: ${err.message}`);
+    return refuse(err.message);
   }
+  if (parsed.error) return refuse(`cannot read ${MATRIX}: ${parsed.error}`);
+  const { capturedAt: stamp, ids } = parsed;
   const problems = [];
-  const stale = freshnessProblem(stamp, now);
+  const stale = freshnessProblem(stamp, now, parsed.freshnessDays);
   if (stale) problems.push(`POS compat gate: ${stale}`);
   const unrecorded = [];
   for (const id of ids) {
-    const provenance = fixtureProvenance(sourceDir, id);
+    const provenance = Object.hasOwn(parsed.provenance, id) ? parsed.provenance[id] : [];
     if (provenance === null) return refuse(`replay fixtures for ${id} are unreadable`);
     if (!provenance.includes("recorded")) unrecorded.push(id);
   }
@@ -213,4 +191,4 @@ function main(argv) {
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
-module.exports = { COMPAT_CHECK, FRESHNESS_DAYS, MAX_CLOCK_SKEW_DAYS, evaluateCompat, main };
+module.exports = { COMPAT_CHECK, MAX_CLOCK_SKEW_DAYS, evaluateCompat, main };
